@@ -94,8 +94,15 @@ public class CloudController
 
     private void StoreActiveRunners()
     {
-        byte[] json = JsonSerializer.SerializeToUtf8Bytes(_activeRunners);
-        File.WriteAllBytes(_persistentPath, json);
+        try
+        {
+            byte[] json = JsonSerializer.SerializeToUtf8Bytes(_activeRunners);
+            File.WriteAllBytes(_persistentPath, json);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError($"Unable to write to {_persistentPath}: {ex.Message}");
+        }
         
         var grouped = _activeRunners
             .GroupBy(m => new { m.OrgName, m.Size })
@@ -125,34 +132,44 @@ public class CloudController
     
     public async Task LoadActiveRunners()
     {
-        if (!File.Exists(_persistentPath))
+        try
         {
-            _logger.LogWarning($"No active runner file found at {_persistentPath}"); 
-            return;
-        }
-        string json = await File.ReadAllTextAsync(_persistentPath);
-        var restoredRunners = JsonSerializer.Deserialize<List<Machine>>(json);
-
-        if (restoredRunners == null)
-        {
-            _logger.LogWarning($"Unable to parse active runner file found at {_persistentPath}"); 
-            return;
-        }
-        _activeRunners = restoredRunners;
-        _logger.LogInformation($"Loaded {restoredRunners.Count} runners from store");
-
-        var htzServers = await _client.Server.Get();
-        
-        // Check if known srv are still in hetzner
-        foreach (var knownSrv in _activeRunners.ToList())
-        {
-            if (htzServers.All(x => x.Name != knownSrv.Name))
+            if (!File.Exists(_persistentPath))
             {
-                // Hetzner server no longer existing - remove from list
-                _logger.LogWarning($"Cleaned {knownSrv.Name} from internal list");
-                _activeRunners.Remove(knownSrv);
+                _logger.LogWarning($"No active runner file found at {_persistentPath}");
+                return;
+            }
+
+            string json = await File.ReadAllTextAsync(_persistentPath);
+            var restoredRunners = JsonSerializer.Deserialize<List<Machine>>(json);
+
+            if (restoredRunners == null)
+            {
+                _logger.LogWarning($"Unable to parse active runner file found at {_persistentPath}");
+                return;
+            }
+
+            _activeRunners = restoredRunners;
+            _logger.LogInformation($"Loaded {restoredRunners.Count} runners from store");
+
+            var htzServers = await _client.Server.Get();
+
+            // Check if known srv are still in hetzner
+            foreach (var knownSrv in _activeRunners.ToList())
+            {
+                if (htzServers.All(x => x.Name != knownSrv.Name))
+                {
+                    // Hetzner server no longer existing - remove from list
+                    _logger.LogWarning($"Cleaned {knownSrv.Name} from internal list");
+                    _activeRunners.Remove(knownSrv);
+                }
             }
         }
+        catch (Exception ex)
+        {
+            _logger.LogError($"Unable to load {_persistentPath}: {ex.Message}");
+        }
+
         StoreActiveRunners();
 
     }
