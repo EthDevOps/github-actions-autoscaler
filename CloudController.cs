@@ -114,7 +114,7 @@ public class CloudController(
     public async Task LoadActiveRunners()
     {
         if (!File.Exists(_persistentPath)) return;
-        string json = File.ReadAllText(_persistentPath);
+        string json = await File.ReadAllTextAsync(_persistentPath);
         var restoredRunners = JsonSerializer.Deserialize<List<Machine>>(json);
 
         if (restoredRunners == null) return;
