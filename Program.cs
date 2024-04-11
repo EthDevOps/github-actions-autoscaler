@@ -9,7 +9,7 @@ public class Program
     public static AutoScalerConfiguration Config = new();
     public static void Main(string[] args)
     {
-        string persistPath = "/Users/markuskeil/dev/tmp"; 
+        string persistPath = Environment.GetEnvironmentVariable("PERSITENT_PATH") ?? Directory.CreateTempSubdirectory().FullName; 
 
         // Setup pool config
         string configPath = Path.Combine(persistPath, "config.json");
