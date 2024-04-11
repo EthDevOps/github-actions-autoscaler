@@ -8,24 +8,36 @@ using RandomFriendlyNameGenerator;
 
 namespace GithubActionsOrchestrator;
 
-public class CloudController(
-    ILogger<CloudController> logger,
-    string hetznerCloudToken,
-    string persistPath,
-    List<MachineSize> configSizes)
+public class CloudController
 {
-    private readonly string _persistentPath = Path.Combine(persistPath, "activeRunners.json");
-    private readonly HetznerCloudClient _client = new(hetznerCloudToken);
-    private readonly ILogger _logger = logger;
+    private readonly string _persistentPath;
+    private readonly HetznerCloudClient _client;
+    private readonly ILogger _logger;
     private List<Machine> _activeRunners = new();
     private static readonly Gauge ActiveMachinesCount = Metrics
         .CreateGauge("github_machines_active", "Number of active machines", labelNames: ["org","size"]);
+
+    private readonly List<MachineSize> _configSizes;
+
+    public CloudController(ILogger<CloudController> logger,
+        string hetznerCloudToken,
+        string persistPath,
+        List<MachineSize> configSizes)
+    {
+        _configSizes = configSizes;
+        _persistentPath = Path.Combine(persistPath, "activeRunners.json");
+        _client = new(hetznerCloudToken);
+        _logger = logger;
+        _logger.LogInformation("Loading from persistent file.");
+        LoadActiveRunners().Wait();
+        _logger.LogInformation("Controller init done.");
+    }
 
     public async Task<string> CreateNewRunner(string arch, string size, string runnerToken, string orgName)
     {
         
         // Select VM size for job - All AMD 
-        string? vmSize = configSizes.FirstOrDefault(x => x.Arch == arch && x.Name == size)?.VmType;
+        string? vmSize = _configSizes.FirstOrDefault(x => x.Arch == arch && x.Name == size)?.VmType;
 
         if (string.IsNullOrEmpty(vmSize))
         {
@@ -113,11 +125,19 @@ public class CloudController(
     
     public async Task LoadActiveRunners()
     {
-        if (!File.Exists(_persistentPath)) return;
+        if (!File.Exists(_persistentPath))
+        {
+            _logger.LogWarning($"No active runner file found at {_persistentPath}"); 
+            return;
+        }
         string json = await File.ReadAllTextAsync(_persistentPath);
         var restoredRunners = JsonSerializer.Deserialize<List<Machine>>(json);
 
-        if (restoredRunners == null) return;
+        if (restoredRunners == null)
+        {
+            _logger.LogWarning($"Unable to parse active runner file found at {_persistentPath}"); 
+            return;
+        }
         _activeRunners = restoredRunners;
         _logger.LogInformation($"Loaded {restoredRunners.Count} runners from store");
 
