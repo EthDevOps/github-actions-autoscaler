@@ -1,18 +1,36 @@
 using System.Net.Http.Headers;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
+using Prometheus;
 
 namespace GithubActionsOrchestrator;
 
 public class Program
 {
     public static AutoScalerConfiguration Config = new();
+    
+    private static readonly Counter ProcessedJobCount = Metrics
+        .CreateCounter("github_autoscaler_jobs_processed", "Number of processed jobs", labelNames: ["org","size"]);
+    
+    private static readonly Counter QueuedJobCount = Metrics
+        .CreateCounter("github_autoscaler_jobs_queued", "Number of queued jobs", labelNames: ["org","size"]);
+    
+    private static readonly Counter PickedJobCount = Metrics
+        .CreateCounter("github_autoscaler_jobs_picked", "Number of jobs picked up by a runner", labelNames: ["org","size"]);
+    
+    private static readonly Counter MachineCreatedCount = Metrics
+        .CreateCounter("github_machines_created", "Number of created machines", labelNames: ["org","size"]);
+    
+    private static readonly Counter TotalMachineTime = Metrics
+        .CreateCounter("github_total_machine_time", "Number of seconds machines were alive", labelNames: ["org","size"]);
+    
     public static void Main(string[] args)
     {
-        string persistPath = Environment.GetEnvironmentVariable("PERSITENT_PATH") ?? Directory.CreateTempSubdirectory().FullName; 
+        string persistPath = Environment.GetEnvironmentVariable("PERSIST_DIR") ?? Directory.CreateTempSubdirectory().FullName; 
+        string configDir = Environment.GetEnvironmentVariable("CONFIG_DIR") ?? Directory.CreateTempSubdirectory().FullName; 
 
         // Setup pool config
-        string configPath = Path.Combine(persistPath, "config.json");
+        string configPath = Path.Combine(configDir, "config.json");
         if (!File.Exists(configPath))
         {
             Console.WriteLine($"[ERR] Unable to read config file at {configPath}");
@@ -28,6 +46,11 @@ public class Program
         }
         
         Console.WriteLine($"[INIT] Loaded {Config.OrgConfigs.Count} orgs and {Config.Sizes.Count} sizes.");
+        
+        // Prepare metrics
+        using var server = new Prometheus.KestrelMetricServer(port: 9000);
+        server.Start();
+        Console.WriteLine("[INIT] Metrics server listening on port 9000");
         
         var builder = WebApplication.CreateBuilder(args);
         builder.Services.AddHostedService<PoolManager>();
@@ -127,6 +150,8 @@ public class Program
                         
                         string newRunner = await cloud.CreateNewRunner("x64", size, runnerToken, orgName);
                         logger.LogInformation($"New Runner {newRunner} [{size}] entering pool.");
+                        MachineCreatedCount.Labels(orgName, size).Inc();
+                        QueuedJobCount.Labels(orgName, size).Inc();
 
                         break;
                     case "in_progress":
@@ -134,6 +159,9 @@ public class Program
                         string? jobUrl = workflowJson.GetProperty("url").GetString();
                         logger.LogInformation($"Workflow Job {jobId} now in progress on {runnerName}");
                         cloud.AddJobClaimToRunner(runnerName, jobId, jobUrl, repoName);
+
+                        string jobSize = cloud.GetInfoForJob(jobId)?.Size;
+                        PickedJobCount.Labels(orgName, jobSize).Inc();
                         break;
                     case "completed":
                         logger.LogInformation($"Workflow Job {jobId} has completed. Deleting VM associated with Job...");
@@ -145,6 +173,10 @@ public class Program
                         else
                         {
                             await cloud.DeleteRunner(vm.Id);
+                            ProcessedJobCount.Labels(vm.OrgName, vm.Size).Inc();
+
+                            double secondsAlive = (DateTime.UtcNow - vm.CreatedAt).TotalSeconds;
+                            TotalMachineTime.Labels(vm.OrgName, vm.Size).Inc(secondsAlive);
                         }
                         break;
                     default:

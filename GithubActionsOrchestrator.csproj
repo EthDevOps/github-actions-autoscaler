@@ -11,6 +11,8 @@
     <ItemGroup>
         <PackageReference Include="HetznerCloud.API" Version="1.1.8" />
         <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.0"/>
+        <PackageReference Include="prometheus-net" Version="8.2.1" />
+        <PackageReference Include="prometheus-net.AspNetCore" Version="8.2.1" />
         <PackageReference Include="RandomFriendlyNameGenerator" Version="1.0.7" />
         <PackageReference Include="Swashbuckle.AspNetCore" Version="6.4.0"/>
     </ItemGroup>

@@ -3,6 +3,7 @@ using System.Text.Json;
 using HetznerCloudApi;
 using HetznerCloudApi.Object.ServerType;
 using HetznerCloudApi.Object.Universal;
+using Prometheus;
 using RandomFriendlyNameGenerator;
 
 namespace GithubActionsOrchestrator;
@@ -17,6 +18,8 @@ public class CloudController(
     private readonly HetznerCloudClient _client = new(hetznerCloudToken);
     private readonly ILogger _logger = logger;
     private List<Machine> _activeRunners = new();
+    private static readonly Gauge ActiveMachinesCount = Metrics
+        .CreateGauge("github_machines_active", "Number of active machines", labelNames: ["org","size"]);
 
     public async Task<string> CreateNewRunner(string arch, string size, string runnerToken, string orgName)
     {
@@ -81,6 +84,22 @@ public class CloudController(
     {
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(_activeRunners);
         File.WriteAllBytes(_persistentPath, json);
+        
+        var grouped = _activeRunners
+            .GroupBy(m => new { m.OrgName, m.Size })
+            .Select(g => new
+            {
+                g.Key.OrgName,
+                g.Key.Size,
+                Count = g.Count()
+            })
+            .ToList();
+
+        foreach (var group in grouped)
+        {
+            ActiveMachinesCount.Labels(group.OrgName, group.Size).Set(group.Count);
+        }
+ 
     }
     
     public async Task LoadActiveRunners()
