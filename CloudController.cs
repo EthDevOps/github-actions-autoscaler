@@ -95,9 +95,18 @@ public class CloudController(
             })
             .ToList();
 
-        foreach (var group in grouped)
+        foreach (var oc in Program.Config.OrgConfigs)
         {
-            ActiveMachinesCount.Labels(group.OrgName, group.Size).Set(group.Count);
+            foreach (var ms in Program.Config.Sizes)
+            {
+                int ct = 0;
+                var am = grouped.FirstOrDefault(x => x.OrgName == oc.OrgName && x.Size == ms.Name);
+                if (am != null)
+                {
+                    ct = am.Count;
+                }
+                ActiveMachinesCount.Labels(oc.OrgName, ms.Name).Set(ct);
+            }
         }
  
     }
