@@ -48,9 +48,22 @@ public class Program
         Console.WriteLine($"[INIT] Loaded {Config.OrgConfigs.Count} orgs and {Config.Sizes.Count} sizes.");
         
         // Prepare metrics
-        using var server = new Prometheus.KestrelMetricServer(port: 9000);
+        using var server = new KestrelMetricServer(port: 9000);
         server.Start();
         Console.WriteLine("[INIT] Metrics server listening on port 9000");
+        
+        // Init count metrics
+        foreach (var org in Config.OrgConfigs)
+        {
+            foreach (var ms in Config.Sizes)
+            {
+               TotalMachineTime.Labels(org.OrgName, ms.Name).IncTo(0); 
+               MachineCreatedCount.Labels(org.OrgName, ms.Name).IncTo(0); 
+               PickedJobCount.Labels(org.OrgName, ms.Name).IncTo(0); 
+               QueuedJobCount.Labels(org.OrgName, ms.Name).IncTo(0); 
+               ProcessedJobCount.Labels(org.OrgName, ms.Name).IncTo(0); 
+            }
+        }
         
         var builder = WebApplication.CreateBuilder(args);
         builder.Services.AddHostedService<PoolManager>();
