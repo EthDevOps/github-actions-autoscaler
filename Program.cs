@@ -122,20 +122,35 @@ public class Program
                     logger.LogWarning("Received a non-workflowJob request. Ignoring.");
                     return;
                 }
+                
+                List<string?> labels = workflowJson.GetProperty("labels").EnumerateArray()
+                    .Select(x => x.GetString()).ToList();
+
+                if (!labels.Contains("self-hosted"))
+                {
+                    logger.LogInformation("Received a non self-hosted request. Ignoring.");
+                    return;
+                }
 
                 long jobId = workflowJson.GetProperty("id").GetInt64();
                 string repoName = json.RootElement.GetProperty("repository").GetProperty("full_name").GetString();
                 string orgName = json.RootElement.GetProperty("organization").GetProperty("login").GetString();
+               
+                
+                // Check if Org is configured
+                if (Config.OrgConfigs.All(x => x.OrgName != orgName))
+                {
+                    logger.LogWarning($"GitHub Org {orgName} is not configured. Ignoring.");
+                    return;
+                }
                 
                 switch (action)
                 {
                     case "queued":
                         logger.LogInformation($"New Workflow Job was queued for {repoName}. Creating VM to replenish pool...");
 
-                        List<string?> labels = workflowJson.GetProperty("labels").EnumerateArray()
-                            .Select(x => x.GetString()).ToList();
 
-                        string size = "size-xs";                                           // Tiny if not specified - 1C/2G
+                        string size = string.Empty;
                         foreach (string csize in Config.Sizes.Where(x => x.Arch == "x64").Select(x => x.Name))
                         {
                             if (labels.Contains(csize))
@@ -143,6 +158,12 @@ public class Program
                                 size = csize;
                                 break;
                             } 
+                        }
+
+                        if (string.IsNullOrEmpty(size))
+                        {
+                            logger.LogWarning($"No runner size specified for workflow in {repoName}. Ignoring.");
+                            return;
                         }
                         
                         // Create a new runner
