@@ -132,8 +132,14 @@ public class Program
 
                 long jobId = workflowJson.GetProperty("id").GetInt64();
                 string repoName = json.RootElement.GetProperty("repository").GetProperty("full_name").GetString();
-                string orgName = json.RootElement.GetProperty("organization").GetProperty("login").GetString();
-               
+                string orgNameReq = json.RootElement.GetProperty("organization").GetProperty("login").GetString();
+              
+                string orgName = Config.OrgConfigs.FirstOrDefault(x => x.OrgName.ToLower() == orgNameReq.ToLower())?.OrgName;
+                if (String.IsNullOrEmpty(orgName))
+                {
+                    logger.LogError($"Unknown organization: {orgName} - check setup. aborting.");
+                    return;
+                }
                 
                 // Check if Org is configured
                 if (Config.OrgConfigs.All(x => x.OrgName != orgName))
