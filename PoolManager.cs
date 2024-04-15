@@ -36,11 +36,13 @@ public class PoolManager : IHostedService, IDisposable
             {
                 int existCt = existingRunners.Count(x => x.Size == pool.Size);
                 int missingCt = pool.NumRunners - existCt;
+
+                string arch = Program.Config.Sizes.FirstOrDefault(x => x.Name == pool.Size).Arch;
                 
                 for (int i = 0; i < missingCt; i++)
                 {
                     // Create VM 
-                    string name = await _cc.CreateNewRunner("x64", pool.Size, runnerToken, org.OrgName);
+                    string name = await _cc.CreateNewRunner(arch, pool.Size, runnerToken, org.OrgName);
                     _logger.LogInformation($"[{i+1}/{missingCt}] Created runner for {org.OrgName}: {name}");
                 }
             }
