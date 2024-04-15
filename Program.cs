@@ -155,11 +155,26 @@ public class Program
 
 
                         string size = string.Empty;
-                        foreach (string csize in Config.Sizes.Where(x => x.Arch == "x64").Select(x => x.Name))
+                        string arch = String.Empty;
+                        foreach (var csize in Config.Sizes)
                         {
-                            if (labels.Contains(csize))
+                            
+                            if (csize.Arch == "x64" && labels.Contains(csize.Name))
                             {
-                                size = csize;
+                                size = csize.Name;
+                                arch = csize.Arch;
+                                break;
+                            } 
+                            if (csize.Arch == "x64" && labels.Contains($"{csize.Name}-x64"))
+                            {
+                                size = csize.Name;
+                                arch = csize.Arch;
+                                break;
+                            } 
+                            if (csize.Arch == "arm64" && labels.Contains($"{csize.Name}-arm64"))
+                            {
+                                size = csize.Name;
+                                arch = csize.Arch;
                                 break;
                             } 
                         }
@@ -186,8 +201,8 @@ public class Program
                             return;
                         }
                         
-                        string newRunner = await cloud.CreateNewRunner("x64", size, runnerToken, orgName);
-                        logger.LogInformation($"New Runner {newRunner} [{size}] entering pool.");
+                        string newRunner = await cloud.CreateNewRunner(arch, size, runnerToken, orgName);
+                        logger.LogInformation($"New Runner {newRunner} [{size} on {arch}] entering pool.");
                         MachineCreatedCount.Labels(orgName, size).Inc();
                         QueuedJobCount.Labels(orgName, size).Inc();
 
