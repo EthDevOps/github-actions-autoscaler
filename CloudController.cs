@@ -51,10 +51,16 @@ public class CloudController
         string name = $"ghr-{NameGenerator.Identifiers.Get(separator: "-")}".ToLower();
         
         _logger.LogInformation($"Creating VM {name} from image {imageName} of size {size}");
+
+        string htzArch = "x86";
+        if (arch == "arm64")
+        {
+            htzArch = "arm";
+        }
         
         // Grab image
         var images = await _client.Image.Get();
-        long? imageId =  images.FirstOrDefault(x => x.Description == imageName)?.Id;
+        long? imageId =  images.FirstOrDefault(x => x.Description == imageName && x.Architecture == htzArch)?.Id;
 
         if (!imageId.HasValue)
         {
