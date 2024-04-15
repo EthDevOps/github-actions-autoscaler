@@ -83,7 +83,7 @@ public class CloudController
             .AppendLine("  - [ sh, -xc, 'curl -fsSL https://get.docker.com -o /opt/install-docker.sh']")
             .AppendLine("  - [ sh, -xc, 'sh /opt/install-docker.sh']")
             .AppendLine("  - [ sh, -xc, 'mkdir -p /opt/actions-runner']")
-            .AppendLine($"  - [ sh, -xc, 'cd /opt/actions-runner && curl -o actions-runner-linux.tar.gz -L https://github.com/actions/runner/releases/download/v{runnerVersion}/actions-runner-linux-x64-{runnerVersion}.tar.gz && tar xzf ./actions-runner-linux.tar.gz']")
+            .AppendLine($"  - [ sh, -xc, 'cd /opt/actions-runner && curl -o actions-runner-linux.tar.gz -L https://github.com/actions/runner/releases/download/v{runnerVersion}/actions-runner-linux-{arch}-{runnerVersion}.tar.gz && tar xzf ./actions-runner-linux.tar.gz']")
             .AppendLine($"  - [ sh, -xc, 'cd /opt/actions-runner && RUNNER_ALLOW_RUNASROOT=true ./config.sh --url https://github.com/{orgName} --token {runnerToken} --ephemeral --disableupdate --labels {size} && RUNNER_ALLOW_RUNASROOT=true ./run.sh ']")
             .ToString();
         _logger.LogInformation($"Launching VM {name}");
