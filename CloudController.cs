@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using HetznerCloudApi;
 using HetznerCloudApi.Object.ServerType;
+using HetznerCloudApi.Object.SshKey;
 using HetznerCloudApi.Object.Universal;
 using Prometheus;
 using RandomFriendlyNameGenerator;
@@ -63,6 +64,10 @@ public class CloudController
         // Grab server type
         List<ServerType> srvTypes = await _client.ServerType.Get();
         long? srvType = srvTypes.FirstOrDefault(x => x.Name == vmSize)?.Id;
+       
+        // Grab SSH keys
+        List<SshKey> sshKeys = await _client.SshKey.Get();
+        List<long> srvKeys = sshKeys.Select(x => x.Id).ToList();
         
         // Create new server
         string runnerVersion = "2.315.0";        
@@ -76,7 +81,7 @@ public class CloudController
             .AppendLine($"  - [ sh, -xc, 'cd /opt/actions-runner && RUNNER_ALLOW_RUNASROOT=true ./config.sh --url https://github.com/{orgName} --token {runnerToken} --ephemeral --disableupdate --labels {size} && RUNNER_ALLOW_RUNASROOT=true ./run.sh ']")
             .ToString();
         _logger.LogInformation($"Launching VM {name}");
-        var newSrv = await _client.Server.Create(eDataCenter.nbg1, imageId.Value, name, srvType.Value, userData: cloudInitcontent);
+        var newSrv = await _client.Server.Create(eDataCenter.nbg1, imageId.Value, name, srvType.Value, userData: cloudInitcontent, sshKeysIds: srvKeys);
         _activeRunners.Add(new Machine
         {
             Id = newSrv.Id,
