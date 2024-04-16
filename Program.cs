@@ -155,25 +155,17 @@ public class Program
                     case "queued":
                         logger.LogInformation($"New Workflow Job was queued for {repoName}. Creating VM to replenish pool...");
 
-
                         string size = string.Empty;
                         string arch = String.Empty;
                         foreach (var csize in Config.Sizes)
                         {
-                            
-                            if (csize.Arch == "x64" && (labels.Contains(csize.Name) || labels.Contains($"self-hosted-{csize.Name}")))
+                            if (labels.Contains(csize.Name) || labels.Contains($"self-hosted-{csize.Name}"))
                             {
                                 size = csize.Name;
                                 arch = csize.Arch;
                                 break;
                             } 
-                            if (csize.Arch == "x64" && (labels.Contains($"{csize.Name}-x64")|| labels.Contains($"self-hosted-{csize.Name}-x64")))
-                            {
-                                size = csize.Name;
-                                arch = csize.Arch;
-                                break;
-                            } 
-                            if (csize.Arch == "arm64" && (labels.Contains($"{csize.Name}-arm64")|| labels.Contains($"self-hosted-{csize.Name}-arm64")))
+                            if (labels.Contains($"{csize.Name}-x64")|| labels.Contains($"self-hosted-{csize.Name}-x64"))
                             {
                                 size = csize.Name;
                                 arch = csize.Arch;
