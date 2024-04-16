@@ -124,9 +124,11 @@ public class Program
                 List<string?> labels = workflowJson.GetProperty("labels").EnumerateArray()
                     .Select(x => x.GetString()).ToList();
 
-                if (!labels.Contains("self-hosted"))
+                bool isSelfHosted = labels.Any(x => x.StartsWith("self-hosted"));
+                
+                if (!isSelfHosted)
                 {
-                    logger.LogInformation("Received a non self-hosted request. Ignoring.");
+                    logger.LogInformation($"Received a non self-hosted request. Ignoring. Labels: {string.Join('|', labels)}");
                     return;
                 }
 
@@ -159,19 +161,19 @@ public class Program
                         foreach (var csize in Config.Sizes)
                         {
                             
-                            if (csize.Arch == "x64" && labels.Contains(csize.Name))
+                            if (csize.Arch == "x64" && (labels.Contains(csize.Name) || labels.Contains($"self-hosted-{csize.Name}")))
                             {
                                 size = csize.Name;
                                 arch = csize.Arch;
                                 break;
                             } 
-                            if (csize.Arch == "x64" && labels.Contains($"{csize.Name}-x64"))
+                            if (csize.Arch == "x64" && (labels.Contains($"{csize.Name}-x64")|| labels.Contains($"self-hosted-{csize.Name}-x64")))
                             {
                                 size = csize.Name;
                                 arch = csize.Arch;
                                 break;
                             } 
-                            if (csize.Arch == "arm64" && labels.Contains($"{csize.Name}-arm64"))
+                            if (csize.Arch == "arm64" && (labels.Contains($"{csize.Name}-arm64")|| labels.Contains($"self-hosted-{csize.Name}-arm64")))
                             {
                                 size = csize.Name;
                                 arch = csize.Arch;
