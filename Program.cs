@@ -78,7 +78,7 @@ public class Program
         builder.Services.AddSingleton<CloudController>(svc =>
         {
             var logger = svc.GetRequiredService<ILogger<CloudController>>();
-            return new CloudController(logger, Config.HetznerToken, persistPath,Config.Sizes);
+            return new CloudController(logger, Config.HetznerToken, persistPath,Config.Sizes, Config.ProvisionScriptBaseUrl, Config.MetricUser, Config.MetricPassword);
         });
 
         var app = builder.Build();

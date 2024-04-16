@@ -19,16 +19,27 @@ public class CloudController
         .CreateGauge("github_machines_active", "Number of active machines", labelNames: ["org","size"]);
 
     private readonly List<MachineSize> _configSizes;
+    private readonly string _provisionBaseUrl;
+    private readonly string _metricUser;
+    private readonly string _metricPassword;
 
     public CloudController(ILogger<CloudController> logger,
         string hetznerCloudToken,
         string persistPath,
-        List<MachineSize> configSizes)
+        List<MachineSize> configSizes,
+        string provisionScriptBaseUrl,
+        string metricUser,
+        string metricPassword)
     {
         _configSizes = configSizes;
         _persistentPath = Path.Combine(persistPath, "activeRunners.json");
         _client = new(hetznerCloudToken);
         _logger = logger;
+        _provisionBaseUrl = provisionScriptBaseUrl;
+        _metricUser = metricUser;
+        _metricPassword = metricPassword;
+
+        
         _logger.LogInformation("Loading from persistent file.");
         LoadActiveRunners().Wait();
         _logger.LogInformation("Controller init done.");
@@ -76,15 +87,23 @@ public class CloudController
         List<long> srvKeys = sshKeys.Select(x => x.Id).ToList();
         
         // Create new server
-        string runnerVersion = "2.315.0";        
+        string runnerVersion = "2.315.0";
+        string provisionVersion = "v1";
+        
         string cloudInitcontent = new StringBuilder()
             .AppendLine("#cloud-config")
+            .AppendLine("write_files:")
+            .AppendLine("  - path: /data/config.env")
+            .AppendLine("    content: |")
+            .AppendLine($"      export GH_VERSION='{runnerVersion}'")
+            .AppendLine($"      export ORG_NAME='{orgName}'")
+            .AppendLine($"      export GH_TOKEN='{runnerToken}'")
+            .AppendLine($"      export RUNNER_SIZE='{size}'")
+            .AppendLine($"      export METRIC_USER='{_metricUser}'")
+            .AppendLine($"      export METRIC_PASS='{_metricPassword}'")
             .AppendLine("runcmd:")
-            .AppendLine("  - [ sh, -xc, 'curl -fsSL https://get.docker.com -o /opt/install-docker.sh']")
-            .AppendLine("  - [ sh, -xc, 'sh /opt/install-docker.sh']")
-            .AppendLine("  - [ sh, -xc, 'mkdir -p /opt/actions-runner']")
-            .AppendLine($"  - [ sh, -xc, 'cd /opt/actions-runner && curl -o actions-runner-linux.tar.gz -L https://github.com/actions/runner/releases/download/v{runnerVersion}/actions-runner-linux-{arch}-{runnerVersion}.tar.gz && tar xzf ./actions-runner-linux.tar.gz']")
-            .AppendLine($"  - [ sh, -xc, 'cd /opt/actions-runner && RUNNER_ALLOW_RUNASROOT=true ./config.sh --url https://github.com/{orgName} --token {runnerToken} --ephemeral --disableupdate --labels {size},self-hosted-{size} && RUNNER_ALLOW_RUNASROOT=true ./run.sh ']")
+            .AppendLine($"  - [ sh, -xc, 'curl -fsSL {_provisionBaseUrl}/provision.{arch}.{provisionVersion}.sh -o /data/provision.sh']")
+            .AppendLine($"  - [ sh, -xc, 'bash /data/provision.sh']")
             .ToString();
         _logger.LogInformation($"Launching VM {name}");
         var newSrv = await _client.Server.Create(eDataCenter.nbg1, imageId.Value, name, srvType.Value, userData: cloudInitcontent, sshKeysIds: srvKeys);
