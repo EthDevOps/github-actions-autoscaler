@@ -196,10 +196,9 @@ public class Program
         }
         else
         {
-            poolMgr.Tasks.Enqueue(new RunnerTask
+            poolMgr.DeleteTasks.Enqueue(new DeleteRunnerTask
             {
-                Action = RunnerAction.Delete,
-                ServerId = vm.Id
+                ServerId = vm.Id,
             });
             ProcessedJobCount.Labels(vm.OrgName, vm.Size).Inc();
 
@@ -265,9 +264,8 @@ public class Program
             return;
         }
 
-        poolMgr.Tasks.Enqueue(new RunnerTask
+        poolMgr.CreateTasks.Enqueue(new CreateRunnerTask
         {
-            Action = RunnerAction.Create,
             Arch = arch,
             Size = size,
             RunnerToken = runnerToken,

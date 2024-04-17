@@ -14,13 +14,15 @@ public class PoolManager : BackgroundService
     private static readonly Gauge QueueSize = Metrics
         .CreateGauge("github_queue", "Number of queued runner tasks");
 
-    public ConcurrentQueue<RunnerTask?> Tasks { get; }
+    public ConcurrentQueue<CreateRunnerTask?> CreateTasks { get; }
+    public ConcurrentQueue<DeleteRunnerTask?> DeleteTasks { get; }
 
     public PoolManager(CloudController cc, ILogger<PoolManager> logger)
     {
         _cc = cc;
         _logger = logger;
-        Tasks = new ConcurrentQueue<RunnerTask?>();
+        CreateTasks = new ConcurrentQueue<CreateRunnerTask?>();
+        DeleteTasks = new ConcurrentQueue<DeleteRunnerTask?>();
     }
     
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -108,9 +110,8 @@ public class PoolManager : BackgroundService
                 for (int i = 0; i < missingCt; i++)
                 {
                     // Queue VM creation
-                    Tasks.Enqueue(new RunnerTask
+                    CreateTasks.Enqueue(new CreateRunnerTask
                     {
-                        Action = RunnerAction.Create,
                         Arch = arch,
                         Size = pool.Size,
                         RunnerToken = runnerToken,
@@ -127,26 +128,33 @@ public class PoolManager : BackgroundService
         
         while (!stoppingToken.IsCancellationRequested)
         {
-            QueueSize.Set(Tasks.Count);
-            if (Tasks.TryDequeue(out RunnerTask? task))
+            QueueSize.Set(CreateTasks.Count + DeleteTasks.Count);
+            
+            if (DeleteTasks.TryDequeue(out DeleteRunnerTask? dtask))
             {
-                _logger.LogInformation($"Current Queue length: {Tasks.Count}");
+                _logger.LogInformation($"Current Queue length: C:{CreateTasks.Count} D:{DeleteTasks.Count}");
+                if (dtask != null)
+                {
+                    bool success = await DeleteRunner(dtask);
+                    if (!success)
+                    {
+                        // Deletion didn't succeed. Let's hold processing runners for a minute
+                        _logger.LogWarning("Encountered a problem deleting runners. Will hold queue processing for 1 minute.");
+                        await Task.Delay(TimeSpan.FromMinutes(1), stoppingToken);
+                    }
+                }
+            }
+            
+            if (CreateTasks.TryDequeue(out CreateRunnerTask? task))
+            {
+                _logger.LogInformation($"Current Queue length: C:{CreateTasks.Count} D:{DeleteTasks.Count}");
                 if (task != null)
                 {
-                    bool success = false;
-                    switch (task.Action)
-                    {
-                        case RunnerAction.Create:
-                            success = await CreateRunner(task);
-                            break;
-                        case RunnerAction.Delete:
-                            success = await DeleteRunner(task);
-                            break;
-                    }
+                    bool success = await CreateRunner(task);
                     if (!success)
                     {
                         // Creation didn't succeed. Let's hold of creating new runners for a minute
-                        _logger.LogWarning("Encountered a problem creating runners. Will hold creation for 1 minute.");
+                        _logger.LogWarning("Encountered a problem creating runners. Will hold queue processing for 1 minute.");
                         await Task.Delay(TimeSpan.FromMinutes(1), stoppingToken);
                     }
                 }
@@ -156,7 +164,7 @@ public class PoolManager : BackgroundService
         }
     }
 
-    private async Task<bool> DeleteRunner(RunnerTask rt)
+    private async Task<bool> DeleteRunner(DeleteRunnerTask rt)
     {
         try
         {
@@ -168,12 +176,12 @@ public class PoolManager : BackgroundService
             _logger.LogError(
                 $"Unable to delete runner [{rt.ServerId} | Retry: {rt.RetryCount}]: {ex.Message}");
             rt.RetryCount += 1;
-            Tasks.Enqueue(rt);
+            DeleteTasks.Enqueue(rt);
             return false;
         }
     }
 
-    private async Task<bool> CreateRunner(RunnerTask rt)
+    private async Task<bool> CreateRunner(CreateRunnerTask rt)
     {
         try
         {
@@ -186,7 +194,7 @@ public class PoolManager : BackgroundService
         {
             _logger.LogError($"Unable to create runner [{rt.Size} on {rt.Arch} | Retry: {rt.RetryCount}]: {ex.Message}");
             rt.RetryCount += 1;
-            Tasks.Enqueue(rt);
+            CreateTasks.Enqueue(rt);
             return false;
         }
     }
