@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using Prometheus;
 using Serilog;
+using Serilog.Events;
 
 namespace GithubActionsOrchestrator;
 
@@ -29,6 +30,10 @@ public class Program
     {
         // Set up logging
         Log.Logger = new LoggerConfiguration()
+            .MinimumLevel.Debug()
+            .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
+            .MinimumLevel.Override("System", LogEventLevel.Warning)
+            .Enrich.FromLogContext()
             .WriteTo.Console()
             .CreateLogger();
 
@@ -100,7 +105,6 @@ public class Program
         app.MapPost("/github-webhook", async (HttpRequest request, [FromServices] CloudController cloud,
             [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue poolMgr) =>
         {
-            logger.LogInformation("Received GitHub Webhook");
             // Verify webhook HMAC - TODO
 
             // Read webhook from github
@@ -130,8 +134,7 @@ public class Program
 
             if (!isSelfHosted)
             {
-                logger.LogInformation(
-                    $"Received a non self-hosted request. Ignoring. Labels: {string.Join('|', labels)}");
+                logger.LogInformation($"Received a non self-hosted request. Ignoring. Labels: {string.Join('|', labels)}");
                 return Results.StatusCode(201);
             }
 
