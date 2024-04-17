@@ -5,6 +5,19 @@ using Serilog;
 
 namespace GithubActionsOrchestrator;
 
+public class RunnerQueue
+{
+    
+    public ConcurrentQueue<CreateRunnerTask?> CreateTasks { get; }
+    public ConcurrentQueue<DeleteRunnerTask?> DeleteTasks { get; }
+
+    public RunnerQueue()
+    {
+        CreateTasks = new ConcurrentQueue<CreateRunnerTask>();
+        DeleteTasks = new ConcurrentQueue<DeleteRunnerTask>();
+    }
+}
+
 public class PoolManager : BackgroundService
 {
     private readonly CloudController _cc;
@@ -14,15 +27,14 @@ public class PoolManager : BackgroundService
     private static readonly Gauge QueueSize = Metrics
         .CreateGauge("github_queue", "Number of queued runner tasks");
 
-    public ConcurrentQueue<CreateRunnerTask?> CreateTasks { get; }
-    public ConcurrentQueue<DeleteRunnerTask?> DeleteTasks { get; }
+    private readonly RunnerQueue _queues;
 
-    public PoolManager(CloudController cc, ILogger<PoolManager> logger)
+
+    public PoolManager(CloudController cc, ILogger<PoolManager> logger, RunnerQueue queues)
     {
         _cc = cc;
         _logger = logger;
-        CreateTasks = new ConcurrentQueue<CreateRunnerTask?>();
-        DeleteTasks = new ConcurrentQueue<DeleteRunnerTask?>();
+        _queues = queues;
     }
     
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -110,7 +122,7 @@ public class PoolManager : BackgroundService
                 for (int i = 0; i < missingCt; i++)
                 {
                     // Queue VM creation
-                    CreateTasks.Enqueue(new CreateRunnerTask
+                    _queues.CreateTasks.Enqueue(new CreateRunnerTask
                     {
                         Arch = arch,
                         Size = pool.Size,
@@ -128,11 +140,11 @@ public class PoolManager : BackgroundService
         
         while (!stoppingToken.IsCancellationRequested)
         {
-            QueueSize.Set(CreateTasks.Count + DeleteTasks.Count);
+            QueueSize.Set(_queues.CreateTasks.Count + _queues.DeleteTasks.Count);
             
-            if (DeleteTasks.TryDequeue(out DeleteRunnerTask? dtask))
+            if (_queues.DeleteTasks.TryDequeue(out DeleteRunnerTask? dtask))
             {
-                _logger.LogInformation($"Current Queue length: C:{CreateTasks.Count} D:{DeleteTasks.Count}");
+                _logger.LogInformation($"Current Queue length: C:{_queues.CreateTasks.Count} D:{_queues.DeleteTasks.Count}");
                 if (dtask != null)
                 {
                     bool success = await DeleteRunner(dtask);
@@ -145,9 +157,9 @@ public class PoolManager : BackgroundService
                 }
             }
             
-            if (CreateTasks.TryDequeue(out CreateRunnerTask? task))
+            if (_queues.CreateTasks.TryDequeue(out CreateRunnerTask? task))
             {
-                _logger.LogInformation($"Current Queue length: C:{CreateTasks.Count} D:{DeleteTasks.Count}");
+                _logger.LogInformation($"Current Queue length: C:{_queues.CreateTasks.Count} D:{_queues.DeleteTasks.Count}");
                 if (task != null)
                 {
                     bool success = await CreateRunner(task);
@@ -176,7 +188,7 @@ public class PoolManager : BackgroundService
             _logger.LogError(
                 $"Unable to delete runner [{rt.ServerId} | Retry: {rt.RetryCount}]: {ex.Message}");
             rt.RetryCount += 1;
-            DeleteTasks.Enqueue(rt);
+            _queues.DeleteTasks.Enqueue(rt);
             return false;
         }
     }
@@ -194,7 +206,7 @@ public class PoolManager : BackgroundService
         {
             _logger.LogError($"Unable to create runner [{rt.Size} on {rt.Arch} | Retry: {rt.RetryCount}]: {ex.Message}");
             rt.RetryCount += 1;
-            CreateTasks.Enqueue(rt);
+            _queues.CreateTasks.Enqueue(rt);
             return false;
         }
     }

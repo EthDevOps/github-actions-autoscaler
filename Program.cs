@@ -77,6 +77,7 @@ public class Program
 
         var builder = WebApplication.CreateBuilder(args);
         builder.Services.AddSerilog();
+        builder.Services.AddSingleton<RunnerQueue>();
         builder.Services.AddHostedService<PoolManager>();
 
         // Add services to the container.
@@ -97,7 +98,7 @@ public class Program
 
         // Prepare pools
         app.MapPost("/github-webhook", async (HttpRequest request, [FromServices] CloudController cloud,
-            [FromServices] ILogger<Program> logger, [FromServices] PoolManager poolMgr) =>
+            [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue poolMgr) =>
         {
             logger.LogInformation("Received GitHub Webhook");
             // Verify webhook HMAC - TODO
@@ -185,7 +186,7 @@ public class Program
         app.Run();
     }
 
-    private static void JobCompleted(ILogger<Program> logger, long jobId, CloudController cloud, PoolManager poolMgr)
+    private static void JobCompleted(ILogger<Program> logger, long jobId, CloudController cloud, RunnerQueue poolMgr)
     {
         logger.LogInformation(
             $"Workflow Job {jobId} has completed. Queuing deletion VM associated with Job...");
@@ -219,7 +220,7 @@ public class Program
         PickedJobCount.Labels(orgName, jobSize).Inc();
     }
 
-    private static async Task JobQueued(ILogger<Program> logger, string? repoName, List<string?> labels, string orgName, PoolManager poolMgr)
+    private static async Task JobQueued(ILogger<Program> logger, string? repoName, List<string?> labels, string orgName, RunnerQueue poolMgr)
     {
         logger.LogInformation(
             $"New Workflow Job was queued for {repoName}. Queuing VM creation to replenish pool...");
