@@ -59,7 +59,7 @@ public class CloudController
 
         // Build image name
         //string imageName = $"gh-actions-img-{arch}-{imageVersion}";
-        string imageName = "Ubuntu 20.04";
+        string imageName = "Ubuntu 22.04";
         string name = $"ghr-{NameGenerator.Identifiers.Get(separator: "-")}".ToLower();
         
         _logger.LogInformation($"Creating VM {name} from image {imageName} of size {size}");
