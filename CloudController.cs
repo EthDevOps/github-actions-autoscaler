@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using HetznerCloudApi;
+using HetznerCloudApi.Object.Server;
 using HetznerCloudApi.Object.ServerType;
 using HetznerCloudApi.Object.SshKey;
 using HetznerCloudApi.Object.Universal;
@@ -105,7 +106,6 @@ public class CloudController
             .AppendLine($"  - [ sh, -xc, 'curl -fsSL {_provisionBaseUrl}/provision.{arch}.{provisionVersion}.sh -o /data/provision.sh']")
             .AppendLine($"  - [ sh, -xc, 'bash /data/provision.sh']")
             .ToString();
-        _logger.LogInformation($"Launching VM {name}");
         var newSrv = await _client.Server.Create(eDataCenter.nbg1, imageId.Value, name, srvType.Value, userData: cloudInitcontent, sshKeysIds: srvKeys);
         _activeRunners.Add(new Machine
         {
@@ -222,10 +222,10 @@ public class CloudController
         var vmInfo = _activeRunners.FirstOrDefault(x => x.Id == serverId) ?? throw new InvalidOperationException();
 
         var totalTime = DateTime.UtcNow - vmInfo.CreatedAt;
-        var runTime = DateTime.UtcNow - vmInfo.JobPickedUpAt;
-        var setupTime = vmInfo.JobPickedUpAt - vmInfo.CreatedAt;
+        var runTime = vmInfo.JobPickedUpAt > DateTime.MinValue ? DateTime.UtcNow - vmInfo.JobPickedUpAt : TimeSpan.Zero;
+        var idleTime = vmInfo.JobPickedUpAt > DateTime.MinValue ? vmInfo.JobPickedUpAt - vmInfo.CreatedAt : DateTime.UtcNow - vmInfo.CreatedAt;
         
-        _logger.LogInformation($"VM Stats for {vmInfo.Name} - Total: {totalTime:g} | Setup: {setupTime:g} | Run: {runTime:g}");
+        _logger.LogInformation($"VM Stats for {vmInfo.Name} - Total: {totalTime:g} | Setup/Idle: {idleTime:g} | Run: {runTime:g}");
         
         _activeRunners.RemoveAll(x => x.Id == serverId);
         StoreActiveRunners();
@@ -244,6 +244,12 @@ public class CloudController
     public Machine? GetInfoForJob(long jobId)
     {
         return _activeRunners.FirstOrDefault(x => x.JobId == jobId) ?? null;
+    }
+
+    public async Task<List<Server>> GetAllServers()
+    {
+        var srvs = await _client.Server.Get();
+        return srvs;
     }
 
     public List<Machine> GetRunnersForOrg(string orgName)
