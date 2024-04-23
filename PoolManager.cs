@@ -51,30 +51,38 @@ public class PoolManager : BackgroundService
             // Grab some stats
             QueueSize.Set(_queues.CreateTasks.Count + _queues.DeleteTasks.Count);
 
-            foreach (var org in orgConfig)
+            try
             {
-                var orgRunners = await GitHubApi.GetRunners(org.GitHubToken, org.OrgName);
-                var ghStatus = orgRunners.runners.Where(x => x.name.StartsWith("ghr")).GroupBy(x =>
+                foreach (var org in orgConfig)
                 {
-                    if (x.busy)
+                    var orgRunners = await GitHubApi.GetRunners(org.GitHubToken, org.OrgName);
+                    var ghStatus = orgRunners.runners.Where(x => x.name.StartsWith("ghr")).GroupBy(x =>
                     {
-                        return "active";
+                        if (x.busy)
+                        {
+                            return "active";
+                        }
+
+                        if (x.status == "online")
+                        {
+                            return "idle";
+                        }
+
+                        return x.status;
+                    }).Select(x => new { Status = x.Key, Count = x.Count() });
+                    foreach (var ghs in ghStatus)
+                    {
+                        GithubRunnersGauge.Labels(org.OrgName, ghs.Status).Set(ghs.Count);
                     }
 
-                    if (x.status == "online")
-                    {
-                        return "idle";
-                    }
-                    return x.status;
-                }).Select(x => new {Status = x.Key, Count = x.Count()});
-                foreach (var ghs in ghStatus)
-                {
-                    GithubRunnersGauge.Labels(org.OrgName, ghs.Status).Set(ghs.Count);
                 }
-                
             }
-            
-            
+            catch (Exception ex)
+            {
+                _logger.LogError($"Unable to get stats: {ex.Message}");
+            }
+
+
             // check for culling interval
             if (DateTime.UtcNow - crudeTimer > TimeSpan.FromMinutes(cullMinutes))
             {
