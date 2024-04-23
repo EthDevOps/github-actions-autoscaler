@@ -1,22 +1,8 @@
-using System.Collections.Concurrent;
 using HetznerCloudApi.Object.Server;
 using Prometheus;
 using Serilog;
 
 namespace GithubActionsOrchestrator;
-
-public class RunnerQueue
-{
-    
-    public ConcurrentQueue<CreateRunnerTask?> CreateTasks { get; }
-    public ConcurrentQueue<DeleteRunnerTask?> DeleteTasks { get; }
-
-    public RunnerQueue()
-    {
-        CreateTasks = new ConcurrentQueue<CreateRunnerTask>();
-        DeleteTasks = new ConcurrentQueue<DeleteRunnerTask>();
-    }
-}
 
 public class PoolManager : BackgroundService
 {
@@ -68,7 +54,7 @@ public class PoolManager : BackgroundService
             foreach (var org in orgConfig)
             {
                 var orgRunners = await GitHubApi.GetRunners(org.GitHubToken, org.OrgName);
-                var ghStatus = orgRunners.runners.GroupBy(x =>
+                var ghStatus = orgRunners.runners.Where(x => x.name.StartsWith("ghr")).GroupBy(x =>
                 {
                     if (x.busy)
                     {
@@ -176,8 +162,8 @@ public class PoolManager : BackgroundService
             GitHubRunners githubRunners = await GitHubApi.GetRunners(org.GitHubToken, org.OrgName);
            
             // Remove all offline runner entries from GitHub
-            List<GitHubRunner> ghOfflineRunners = githubRunners.runners.Where(x => x.status == "offline").ToList();
-            List<GitHubRunner> ghIdleRunners = githubRunners.runners.Where(x => x is { status: "online", busy: false }).ToList();
+            List<GitHubRunner> ghOfflineRunners = githubRunners.runners.Where(x => x.name.StartsWith("ghr") && x.status == "offline").ToList();
+            List<GitHubRunner> ghIdleRunners = githubRunners.runners.Where(x => x.name.StartsWith("ghr") && x is { status: "online", busy: false }).ToList();
 
             foreach (var runnerToRemove in ghOfflineRunners)
             {
@@ -233,7 +219,7 @@ public class PoolManager : BackgroundService
             
             // Get remaining runners registered to github
             githubRunners = await GitHubApi.GetRunners(org.GitHubToken, org.OrgName);
-            registeredServerNames.AddRange(githubRunners.runners.Select(x => x.name));
+            registeredServerNames.AddRange(githubRunners.runners.Where(x => x.name.StartsWith("ghr")).Select(x => x.name));
         }
         
         // Remove every VM that's not in the github registered runners
@@ -284,35 +270,5 @@ public class PoolManager : BackgroundService
             _queues.CreateTasks.Enqueue(rt);
             return false;
         }
-    }
-}
-
-public static class ListExtensionMethods
-{
-    public static T PopAt<T>(this List<T> list, int index)
-    {
-        var r = list[index];
-        list.RemoveAt(index);
-        return r;
-    }
-
-    public static T PopFirst<T>(this List<T> list, Predicate<T> predicate)
-    {
-        var index = list.FindIndex(predicate);
-        var r = list[index];
-        list.RemoveAt(index);
-        return r;
-    }
-
-    public static T PopFirstOrDefault<T>(this List<T> list, Predicate<T> predicate) where T : class
-    {
-        var index = list.FindIndex(predicate);
-        if (index > -1)
-        {
-            var r = list[index];
-            list.RemoveAt(index);
-            return r;
-        }
-        return null;
     }
 }

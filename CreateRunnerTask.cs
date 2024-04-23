@@ -9,8 +9,3 @@ public record CreateRunnerTask
     public int RetryCount { get; set; }
     public long ServerId { get; set; }
 }
-public record DeleteRunnerTask
-{
-    public int RetryCount { get; set; }
-    public long ServerId { get; set; }
-}

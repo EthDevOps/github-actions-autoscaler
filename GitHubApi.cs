@@ -3,31 +3,6 @@ using System.Text.Json;
 
 namespace GithubActionsOrchestrator;
 
-public class GitHubRunnerLabel
-{
-    public int id { get; set; }
-    public string name { get; set; }
-    public string type { get; set; }
-}
-
-public class GitHubRunner
-{
-    public int id { get; set; }
-    public int? runner_group_id { get; set; }
-    public string name { get; set; }
-    public string os { get; set; }
-    public string status { get; set; }
-    public bool busy { get; set; }
-    public List<GitHubRunnerLabel> labels { get; set; }
-}
-
-public class GitHubRunners
-{
-    public int total_count { get; set; }
-    public List<GitHubRunner> runners { get; set; }
-}
-
-
 public class GitHubApi {
     public static async Task<GitHubRunners> GetRunners(string githubToken, string orgName)
     {
