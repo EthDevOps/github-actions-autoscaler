@@ -167,6 +167,7 @@ public class PoolManager : BackgroundService
 
     private async Task CullRunners(List<OrgConfiguration> orgConfig, List<Server> allHtzSrvs)
     {
+        List<string> registeredServerNames = new List<string>();
         foreach (OrgConfiguration org in orgConfig)
         {
             _logger.LogInformation($"Culling runners for {org.OrgName}...");
@@ -229,8 +230,25 @@ public class PoolManager : BackgroundService
                     }
                 }
             }
-
+            
+            // Get remaining runners registered to github
+            githubRunners = await GitHubApi.GetRunners(org.GitHubToken, org.OrgName);
+            registeredServerNames.AddRange(githubRunners.runners.Select(x => x.name));
         }
+        
+        // Remove every VM that's not in the github registered runners
+        var remainingHtzServer = await _cc.GetAllServers();
+        foreach (var htzSrv in remainingHtzServer)
+        {
+            if (registeredServerNames.Contains(htzSrv.Name))
+            {
+                // If we know the server in github, skip
+                continue;
+            }
+            _logger.LogInformation($"Removing VM that is not in any GitHub registration: {htzSrv.Name}");
+            await _cc.DeleteRunner(htzSrv.Id);
+        }
+
     }
 
     private async Task<bool> DeleteRunner(DeleteRunnerTask rt)
