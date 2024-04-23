@@ -210,12 +210,12 @@ public class CloudController
 
         if (srvMeta == null)
         {
-            _logger.LogError($"VM with ID {serverId} not in list. Aborting.");
+            _logger.LogWarning($"VM with ID {serverId} not in active runners list. Only removing from htz.");
+            await _client.Server.Delete(serverId);
             return;
         }
         
         _logger.LogInformation($"Deleting VM {srvMeta.Name} with IP {srvMeta.Ipv4}");
-        var srv = await _client.Server.Get(serverId);
         await _client.Server.Delete(serverId);
        
         // Do some stats

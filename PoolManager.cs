@@ -166,7 +166,7 @@ public class PoolManager : BackgroundService
                     foreach (var r in idlePoolRunner)
                     { 
                         var htzSrv = allHtzSrvs.FirstOrDefault(x => x.Name == r.name);
-                        if (DateTime.Now - htzSrv.Created < TimeSpan.FromMinutes(15))
+                        if (htzSrv != null && DateTime.Now - htzSrv.Created < TimeSpan.FromMinutes(15))
                         {
                             // Don't cull a recently created runner. there might be a job waiting for pickup
                             continue;
