@@ -68,11 +68,22 @@ public class PoolManager : BackgroundService
             foreach (var org in orgConfig)
             {
                 var orgRunners = await GitHubApi.GetRunners(org.GitHubToken, org.OrgName);
-                var ghStatus = orgRunners.runners.GroupBy(x => x.status).Select(x => new {Status = x.Key, Count = x.Count()});
+                var ghStatus = orgRunners.runners.GroupBy(x =>
+                {
+                    if (x.busy)
+                    {
+                        return "active";
+                    }
+
+                    if (x.status == "online")
+                    {
+                        return "idle";
+                    }
+                    return x.status;
+                }).Select(x => new {Status = x.Key, Count = x.Count()});
                 foreach (var ghs in ghStatus)
                 {
                     GithubRunnersGauge.Labels(org.OrgName, ghs.Status).Set(ghs.Count);
-                    _logger.LogInformation($"GitHub register stats for {org.OrgName}: {ghs.Status}={ghs.Count}");
                 }
                 
             }
