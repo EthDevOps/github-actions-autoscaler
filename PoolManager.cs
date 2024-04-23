@@ -26,6 +26,8 @@ public class PoolManager : BackgroundService
         .CreateCounter("github_machines_created", "Number of created machines", labelNames: ["org","size"]);
     private static readonly Gauge QueueSize = Metrics
         .CreateGauge("github_queue", "Number of queued runner tasks");
+    private static readonly Gauge GithubRunnersGauge = Metrics
+        .CreateGauge("github_registered_runners", "Number of runners registered to github actions", labelNames: ["org", "status"]);
 
     private readonly RunnerQueue _queues;
 
@@ -56,10 +58,26 @@ public class PoolManager : BackgroundService
         await Task.Yield();
        
         DateTime crudeTimer = DateTime.UtcNow;
-        int cullMinutes = 30;
+        int cullMinutes = 10;
         
         while (!stoppingToken.IsCancellationRequested)
         {
+            // Grab some stats
+            QueueSize.Set(_queues.CreateTasks.Count + _queues.DeleteTasks.Count);
+
+            foreach (var org in orgConfig)
+            {
+                var orgRunners = await GitHubApi.GetRunners(org.GitHubToken, org.OrgName);
+                var ghStatus = orgRunners.runners.GroupBy(x => x.status).Select(x => new {Status = x.Key, Count = x.Count()});
+                foreach (var ghs in ghStatus)
+                {
+                    GithubRunnersGauge.Labels(org.OrgName, ghs.Status).Set(ghs.Count);
+                    _logger.LogInformation($"GitHub register stats for {org.OrgName}: {ghs.Status}={ghs.Count}");
+                }
+                
+            }
+            
+            
             // check for culling interval
             if (DateTime.UtcNow - crudeTimer > TimeSpan.FromMinutes(cullMinutes))
             {
@@ -68,8 +86,7 @@ public class PoolManager : BackgroundService
                 await StartPoolRunners(orgConfig);
                 crudeTimer = DateTime.UtcNow;
             }
-            
-            QueueSize.Set(_queues.CreateTasks.Count + _queues.DeleteTasks.Count);
+           
             
             if (_queues.DeleteTasks.TryDequeue(out DeleteRunnerTask? dtask))
             {
