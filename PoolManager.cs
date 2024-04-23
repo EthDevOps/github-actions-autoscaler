@@ -55,6 +55,9 @@ public class PoolManager : BackgroundService
             {
                 foreach (var org in orgConfig)
                 {
+                    GithubRunnersGauge.Labels(org.OrgName, "active").Set(0);
+                    GithubRunnersGauge.Labels(org.OrgName, "idle").Set(0);
+                    GithubRunnersGauge.Labels(org.OrgName, "offline").Set(0);
                     var orgRunners = await GitHubApi.GetRunners(org.GitHubToken, org.OrgName);
                     var ghStatus = orgRunners.runners.Where(x => x.name.StartsWith("ghr")).GroupBy(x =>
                     {
