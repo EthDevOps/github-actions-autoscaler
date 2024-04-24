@@ -177,6 +177,12 @@ public class PoolManager : BackgroundService
 
             foreach (GitHubRunner runnerToRemove in ghOfflineRunners)
             {
+                var htzSrv = allHtzSrvs.FirstOrDefault(x => x.Name == runnerToRemove.Name);
+                if (htzSrv != null && DateTime.UtcNow - htzSrv.Created.ToUniversalTime() < TimeSpan.FromMinutes(30))
+                {
+                    // VM younger than 30min - not culling yet
+                    continue;
+                }
                 _logger.LogInformation($"Removing offline runner {runnerToRemove.Name} from org {org.OrgName}");
                 await GitHubApi.RemoveRunner(org.OrgName, org.GitHubToken, runnerToRemove.Id);
             }
