@@ -1,4 +1,3 @@
-using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using Prometheus;
@@ -64,14 +63,14 @@ public class Program
         Log.Information($"Loaded {Config.OrgConfigs.Count} orgs and {Config.Sizes.Count} sizes.");
 
         // Prepare metrics
-        using var server = new KestrelMetricServer(port: 9000);
+        using KestrelMetricServer server = new(port: 9000);
         server.Start();
         Log.Information("Metrics server listening on port 9000");
 
         // Init count metrics
-        foreach (var org in Config.OrgConfigs)
+        foreach (OrgConfiguration org in Config.OrgConfigs)
         {
-            foreach (var ms in Config.Sizes)
+            foreach (MachineSize ms in Config.Sizes)
             {
                 TotalMachineTime.Labels(org.OrgName, ms.Name).IncTo(0);
                 PickedJobCount.Labels(org.OrgName, ms.Name).IncTo(0);
@@ -80,7 +79,7 @@ public class Program
             }
         }
 
-        var builder = WebApplication.CreateBuilder(args);
+        WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
         builder.Services.AddSerilog();
         builder.Services.AddSingleton<RunnerQueue>();
         builder.Services.AddHostedService<PoolManager>();
@@ -92,14 +91,14 @@ public class Program
         builder.Services.AddEndpointsApiExplorer();
         builder.Services.AddSwaggerGen();
 
-        builder.Services.AddSingleton<CloudController>(svc =>
+        builder.Services.AddSingleton(svc =>
         {
-            var logger = svc.GetRequiredService<ILogger<CloudController>>();
+            ILogger<CloudController> logger = svc.GetRequiredService<ILogger<CloudController>>();
             return new CloudController(logger, Config.HetznerToken, persistPath, Config.Sizes,
                 Config.ProvisionScriptBaseUrl, Config.MetricUser, Config.MetricPassword);
         });
 
-        var app = builder.Build();
+        WebApplication app = builder.Build();
 
         // Prepare pools
         app.MapPost("/github-webhook", async (HttpRequest request, [FromServices] CloudController cloud,
@@ -108,9 +107,9 @@ public class Program
             // Verify webhook HMAC - TODO
 
             // Read webhook from github
-            var json = await request.ReadFromJsonAsync<JsonDocument>();
+            JsonDocument json = await request.ReadFromJsonAsync<JsonDocument>();
 
-            string action = String.Empty;
+            string action;
             if (json.RootElement.TryGetProperty("action", out JsonElement actionJson))
             {
                 action = actionJson.GetString() ?? string.Empty;
@@ -121,13 +120,13 @@ public class Program
                 return Results.StatusCode(201);
             }
 
-            if (!json.RootElement.TryGetProperty("workflow_job", out var workflowJson))
+            if (!json.RootElement.TryGetProperty("workflow_job", out JsonElement workflowJson))
             {
                 logger.LogDebug("Received a non-workflowJob request. Ignoring.");
                 return Results.StatusCode(201);
             }
 
-            List<string?> labels = workflowJson.GetProperty("labels").EnumerateArray()
+            List<string> labels = workflowJson.GetProperty("labels").EnumerateArray()
                 .Select(x => x.GetString()).ToList();
 
             bool isSelfHosted = labels.Any(x => x.StartsWith("self-hosted"));
@@ -193,7 +192,7 @@ public class Program
     {
         logger.LogInformation(
             $"Workflow Job {jobId} has completed. Queuing deletion VM associated with Job...");
-        var vm = cloud.GetInfoForJob(jobId);
+        Machine vm = cloud.GetInfoForJob(jobId);
         if (vm == null)
         {
             logger.LogError($"No VM on record for JobID: {jobId}");
@@ -212,10 +211,10 @@ public class Program
     }
 
     private static void JobInProgress(JsonElement workflowJson, ILogger<Program> logger, long jobId, CloudController cloud,
-        string? repoName, string orgName)
+        string repoName, string orgName)
     {
-        string? runnerName = workflowJson.GetProperty("runner_name").GetString();
-        string? jobUrl = workflowJson.GetProperty("url").GetString();
+        string runnerName = workflowJson.GetProperty("runner_name").GetString();
+        string jobUrl = workflowJson.GetProperty("url").GetString();
         logger.LogInformation($"Workflow Job {jobId} now in progress on {runnerName}");
         cloud.AddJobClaimToRunner(runnerName, jobId, jobUrl, repoName);
 
@@ -223,14 +222,14 @@ public class Program
         PickedJobCount.Labels(orgName, jobSize).Inc();
     }
 
-    private static async Task JobQueued(ILogger<Program> logger, string? repoName, List<string?> labels, string orgName, RunnerQueue poolMgr)
+    private static async Task JobQueued(ILogger<Program> logger, string repoName, List<string> labels, string orgName, RunnerQueue poolMgr)
     {
         logger.LogInformation(
             $"New Workflow Job was queued for {repoName}. Queuing VM creation to replenish pool...");
 
         string size = string.Empty;
         string arch = String.Empty;
-        foreach (var csize in Config.Sizes)
+        foreach (MachineSize csize in Config.Sizes)
         {
             if (labels.Contains(csize.Name) || labels.Contains($"self-hosted-{csize.Name}"))
             {
@@ -254,7 +253,7 @@ public class Program
         }
 
         // Create a new runner
-        string? githubToken = Config.OrgConfigs.FirstOrDefault(x => x.OrgName == orgName)?.GitHubToken;
+        string githubToken = Config.OrgConfigs.FirstOrDefault(x => x.OrgName == orgName)?.GitHubToken;
         if (String.IsNullOrEmpty(githubToken))
         {
             logger.LogError($"Unknown organization: {orgName} - check setup. aborting.");
@@ -277,7 +276,5 @@ public class Program
         });
 
         QueuedJobCount.Labels(orgName, size).Inc();
-
-        return;
     }
 }

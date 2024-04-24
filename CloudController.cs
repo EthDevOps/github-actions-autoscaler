@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using HetznerCloudApi;
+using HetznerCloudApi.Object.Image;
 using HetznerCloudApi.Object.Server;
 using HetznerCloudApi.Object.ServerType;
 using HetznerCloudApi.Object.SshKey;
@@ -50,7 +51,7 @@ public class CloudController
     {
         
         // Select VM size for job - All AMD 
-        string? vmSize = _configSizes.FirstOrDefault(x => x.Arch == arch && x.Name == size)?.VmType;
+        string vmSize = _configSizes.FirstOrDefault(x => x.Arch == arch && x.Name == size)?.VmType;
 
         if (string.IsNullOrEmpty(vmSize))
         {
@@ -71,7 +72,7 @@ public class CloudController
         }
         
         // Grab image
-        var images = await _client.Image.Get();
+        List<Image> images = await _client.Image.Get();
         long? imageId =  images.FirstOrDefault(x => x.Description == imageName && x.Architecture == htzArch)?.Id;
 
         if (!imageId.HasValue)
@@ -104,9 +105,9 @@ public class CloudController
             .AppendLine($"      export METRIC_PASS='{_metricPassword}'")
             .AppendLine("runcmd:")
             .AppendLine($"  - [ sh, -xc, 'curl -fsSL {_provisionBaseUrl}/provision.{arch}.{provisionVersion}.sh -o /data/provision.sh']")
-            .AppendLine($"  - [ sh, -xc, 'bash /data/provision.sh']")
+            .AppendLine("  - [ sh, -xc, 'bash /data/provision.sh']")
             .ToString();
-        var newSrv = await _client.Server.Create(eDataCenter.nbg1, imageId.Value, name, srvType.Value, userData: cloudInitcontent, sshKeysIds: srvKeys);
+        Server newSrv = await _client.Server.Create(eDataCenter.nbg1, imageId.Value, name, srvType.Value, userData: cloudInitcontent, sshKeysIds: srvKeys);
         _activeRunners.Add(new Machine
         {
             Id = newSrv.Id,
@@ -144,9 +145,9 @@ public class CloudController
             })
             .ToList();
 
-        foreach (var oc in Program.Config.OrgConfigs)
+        foreach (OrgConfiguration oc in Program.Config.OrgConfigs)
         {
-            foreach (var ms in Program.Config.Sizes)
+            foreach (MachineSize ms in Program.Config.Sizes)
             {
                 int ct = 0;
                 var am = grouped.FirstOrDefault(x => x.OrgName == oc.OrgName && x.Size == ms.Name);
@@ -171,7 +172,7 @@ public class CloudController
             }
 
             string json = await File.ReadAllTextAsync(_persistentPath);
-            var restoredRunners = JsonSerializer.Deserialize<List<Machine>>(json);
+            List<Machine> restoredRunners = JsonSerializer.Deserialize<List<Machine>>(json);
 
             if (restoredRunners == null)
             {
@@ -182,10 +183,10 @@ public class CloudController
             _activeRunners = restoredRunners;
             _logger.LogInformation($"Loaded {restoredRunners.Count} runners from store");
 
-            var htzServers = await _client.Server.Get();
+            List<Server> htzServers = await _client.Server.Get();
 
             // Check if known srv are still in hetzner
-            foreach (var knownSrv in _activeRunners.ToList())
+            foreach (Machine knownSrv in _activeRunners.ToList())
             {
                 if (htzServers.All(x => x.Name != knownSrv.Name))
                 {
@@ -206,7 +207,7 @@ public class CloudController
 
     public async Task DeleteRunner(long serverId)
     {
-        var srvMeta = _activeRunners.FirstOrDefault(x => x.Id == serverId);
+        Machine srvMeta = _activeRunners.FirstOrDefault(x => x.Id == serverId);
 
         if (srvMeta == null)
         {
@@ -219,11 +220,11 @@ public class CloudController
         await _client.Server.Delete(serverId);
        
         // Do some stats
-        var vmInfo = _activeRunners.FirstOrDefault(x => x.Id == serverId) ?? throw new InvalidOperationException();
+        Machine vmInfo = _activeRunners.FirstOrDefault(x => x.Id == serverId) ?? throw new InvalidOperationException();
 
-        var totalTime = DateTime.UtcNow - vmInfo.CreatedAt;
-        var runTime = vmInfo.JobPickedUpAt > DateTime.MinValue ? DateTime.UtcNow - vmInfo.JobPickedUpAt : TimeSpan.Zero;
-        var idleTime = vmInfo.JobPickedUpAt > DateTime.MinValue ? vmInfo.JobPickedUpAt - vmInfo.CreatedAt : DateTime.UtcNow - vmInfo.CreatedAt;
+        TimeSpan totalTime = DateTime.UtcNow - vmInfo.CreatedAt;
+        TimeSpan runTime = vmInfo.JobPickedUpAt > DateTime.MinValue ? DateTime.UtcNow - vmInfo.JobPickedUpAt : TimeSpan.Zero;
+        TimeSpan idleTime = vmInfo.JobPickedUpAt > DateTime.MinValue ? vmInfo.JobPickedUpAt - vmInfo.CreatedAt : DateTime.UtcNow - vmInfo.CreatedAt;
         
         _logger.LogInformation($"VM Stats for {vmInfo.Name} - Total: {totalTime:g} | Setup/Idle: {idleTime:g} | Run: {runTime:g}");
         
@@ -231,7 +232,7 @@ public class CloudController
         StoreActiveRunners();
     }
 
-    public void AddJobClaimToRunner(string? vmId, long jobId, string? jobUrl, string? repoName)
+    public void AddJobClaimToRunner(string vmId, long jobId, string jobUrl, string repoName)
     {
         Machine vm = _activeRunners.FirstOrDefault(x => x.Name == vmId) ?? throw new InvalidOperationException();
         vm.JobId = jobId;
@@ -241,14 +242,14 @@ public class CloudController
         StoreActiveRunners();
     }
     
-    public Machine? GetInfoForJob(long jobId)
+    public Machine GetInfoForJob(long jobId)
     {
         return _activeRunners.FirstOrDefault(x => x.JobId == jobId) ?? null;
     }
 
     public async Task<List<Server>> GetAllServers()
     {
-        var srvs = await _client.Server.Get();
+        List<Server> srvs = await _client.Server.Get();
         return srvs;
     }
 

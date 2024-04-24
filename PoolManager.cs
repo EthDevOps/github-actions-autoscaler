@@ -1,6 +1,5 @@
 using HetznerCloudApi.Object.Server;
 using Prometheus;
-using Serilog;
 
 namespace GithubActionsOrchestrator;
 
@@ -31,7 +30,7 @@ public class PoolManager : BackgroundService
         _logger.LogInformation("PoolManager online.");
         _logger.LogInformation("Queuing base load runner start...");
 
-        var orgConfig = Program.Config.OrgConfigs;
+        List<OrgConfiguration> orgConfig = Program.Config.OrgConfigs;
         
         // Cull runners
         List<Server> allHtzSrvs = await _cc.GetAllServers();
@@ -53,25 +52,25 @@ public class PoolManager : BackgroundService
 
             try
             {
-                foreach (var org in orgConfig)
+                foreach (OrgConfiguration org in orgConfig)
                 {
                     GithubRunnersGauge.Labels(org.OrgName, "active").Set(0);
                     GithubRunnersGauge.Labels(org.OrgName, "idle").Set(0);
                     GithubRunnersGauge.Labels(org.OrgName, "offline").Set(0);
-                    var orgRunners = await GitHubApi.GetRunners(org.GitHubToken, org.OrgName);
-                    var ghStatus = orgRunners.runners.Where(x => x.name.StartsWith("ghr")).GroupBy(x =>
+                    GitHubRunners orgRunners = await GitHubApi.GetRunners(org.GitHubToken, org.OrgName);
+                    var ghStatus = orgRunners.Runners.Where(x => x.Name.StartsWith("ghr")).GroupBy(x =>
                     {
-                        if (x.busy)
+                        if (x.Busy)
                         {
                             return "active";
                         }
 
-                        if (x.status == "online")
+                        if (x.Status == "online")
                         {
                             return "idle";
                         }
 
-                        return x.status;
+                        return x.Status;
                     }).Select(x => new { Status = x.Key, Count = x.Count() });
                     foreach (var ghs in ghStatus)
                     {
@@ -96,7 +95,7 @@ public class PoolManager : BackgroundService
             }
            
             
-            if (_queues.DeleteTasks.TryDequeue(out DeleteRunnerTask? dtask))
+            if (_queues.DeleteTasks.TryDequeue(out DeleteRunnerTask dtask))
             {
                 _logger.LogInformation($"Current Queue length: C:{_queues.CreateTasks.Count} D:{_queues.DeleteTasks.Count}");
                 if (dtask != null)
@@ -111,7 +110,7 @@ public class PoolManager : BackgroundService
                 }
             }
             
-            if (_queues.CreateTasks.TryDequeue(out CreateRunnerTask? task))
+            if (_queues.CreateTasks.TryDequeue(out CreateRunnerTask task))
             {
                 _logger.LogInformation($"Current Queue length: C:{_queues.CreateTasks.Count} D:{_queues.DeleteTasks.Count}");
                 if (task != null)
@@ -133,13 +132,13 @@ public class PoolManager : BackgroundService
     private async Task StartPoolRunners(List<OrgConfiguration> orgConfig)
     {
         // Start pool runners
-        foreach (var org in orgConfig)
+        foreach (OrgConfiguration org in orgConfig)
         {
             _logger.LogInformation($"Checking pool runners for {org.OrgName}");
             string runnerToken = await GitHubApi.GetRunnerToken(org.GitHubToken, org.OrgName);
             List<Machine> existingRunners = _cc.GetRunnersForOrg(org.OrgName);
             
-            foreach (var pool in org.Pools)
+            foreach (Pool pool in org.Pools)
             {
                 int existCt = existingRunners.Count(x => x.Size == pool.Size);
                 int missingCt = pool.NumRunners - existCt;
@@ -164,7 +163,7 @@ public class PoolManager : BackgroundService
 
     private async Task CullRunners(List<OrgConfiguration> orgConfig, List<Server> allHtzSrvs)
     {
-        List<string> registeredServerNames = new List<string>();
+        List<string> registeredServerNames = new();
         foreach (OrgConfiguration org in orgConfig)
         {
             _logger.LogInformation($"Culling runners for {org.OrgName}...");
@@ -173,33 +172,33 @@ public class PoolManager : BackgroundService
             GitHubRunners githubRunners = await GitHubApi.GetRunners(org.GitHubToken, org.OrgName);
            
             // Remove all offline runner entries from GitHub
-            List<GitHubRunner> ghOfflineRunners = githubRunners.runners.Where(x => x.name.StartsWith("ghr") && x.status == "offline").ToList();
-            List<GitHubRunner> ghIdleRunners = githubRunners.runners.Where(x => x.name.StartsWith("ghr") && x is { status: "online", busy: false }).ToList();
+            List<GitHubRunner> ghOfflineRunners = githubRunners.Runners.Where(x => x.Name.StartsWith("ghr") && x.Status == "offline").ToList();
+            List<GitHubRunner> ghIdleRunners = githubRunners.Runners.Where(x => x.Name.StartsWith("ghr") && x is { Status: "online", Busy: false }).ToList();
 
-            foreach (var runnerToRemove in ghOfflineRunners)
+            foreach (GitHubRunner runnerToRemove in ghOfflineRunners)
             {
-                _logger.LogInformation($"Removing offline runner {runnerToRemove.name} from org {org.OrgName}");
-                await GitHubApi.RemoveRunner(org.OrgName, org.GitHubToken, runnerToRemove.id);
+                _logger.LogInformation($"Removing offline runner {runnerToRemove.Name} from org {org.OrgName}");
+                await GitHubApi.RemoveRunner(org.OrgName, org.GitHubToken, runnerToRemove.Id);
             }
            
             // Check how many base runners should be around and idle
-            foreach (var size in Program.Config.Sizes)
+            foreach (MachineSize size in Program.Config.Sizes)
             {
-                List<GitHubRunner> idlePoolRunner = ghIdleRunners.Where(x => x.labels.Any(y => y.name == size.Name)).ToList();
+                List<GitHubRunner> idlePoolRunner = ghIdleRunners.Where(x => x.Labels.Any(y => y.Name == size.Name)).ToList();
                 if (org.Pools.All(x => x.Size != size.Name))
                 {
                     // Non of this size exists in pool. Remove all 
-                    foreach (var r in idlePoolRunner)
+                    foreach (GitHubRunner r in idlePoolRunner)
                     { 
-                        var htzSrv = allHtzSrvs.FirstOrDefault(x => x.Name == r.name);
+                        Server htzSrv = allHtzSrvs.FirstOrDefault(x => x.Name == r.Name);
                         if (htzSrv != null && DateTime.Now - htzSrv.Created < TimeSpan.FromMinutes(15))
                         {
                             // Don't cull a recently created runner. there might be a job waiting for pickup
                             continue;
                         }
                         
-                        _logger.LogInformation($"Removing excess runner {r.name} from org {org.OrgName}");
-                        await GitHubApi.RemoveRunner(org.OrgName, org.GitHubToken, r.id);
+                        _logger.LogInformation($"Removing excess runner {r.Name} from org {org.OrgName}");
+                        await GitHubApi.RemoveRunner(org.OrgName, org.GitHubToken, r.Id);
                         
                         long? htzSrvId = htzSrv?.Id;
                         if (htzSrvId.HasValue)
@@ -210,17 +209,17 @@ public class PoolManager : BackgroundService
                 }
                
             }
-            foreach (var pool in org.Pools)
+            foreach (Pool pool in org.Pools)
             {
                 // get all idle runners of size
-                List<GitHubRunner> idlePoolRunner = ghIdleRunners.Where(x => x.labels.Any(y => y.name == pool.Size)).ToList();
+                List<GitHubRunner> idlePoolRunner = ghIdleRunners.Where(x => x.Labels.Any(y => y.Name == pool.Size)).ToList();
                 while (idlePoolRunner.Count > pool.NumRunners)
                 {
-                    var r = idlePoolRunner.PopAt(0);
+                    GitHubRunner r = idlePoolRunner.PopAt(0);
                     // Remove excess runners
-                    _logger.LogInformation($"Removing excess runner {r.name} from org {org.OrgName}");
-                    await GitHubApi.RemoveRunner(org.OrgName, org.GitHubToken, r.id);
-                    long? htzSrvId = allHtzSrvs.FirstOrDefault(x => x.Name == r.name)?.Id;
+                    _logger.LogInformation($"Removing excess runner {r.Name} from org {org.OrgName}");
+                    await GitHubApi.RemoveRunner(org.OrgName, org.GitHubToken, r.Id);
+                    long? htzSrvId = allHtzSrvs.FirstOrDefault(x => x.Name == r.Name)?.Id;
                     if (htzSrvId.HasValue)
                     {
                         await _cc.DeleteRunner(htzSrvId.Value);
@@ -230,12 +229,12 @@ public class PoolManager : BackgroundService
             
             // Get remaining runners registered to github
             githubRunners = await GitHubApi.GetRunners(org.GitHubToken, org.OrgName);
-            registeredServerNames.AddRange(githubRunners.runners.Where(x => x.name.StartsWith("ghr")).Select(x => x.name));
+            registeredServerNames.AddRange(githubRunners.Runners.Where(x => x.Name.StartsWith("ghr")).Select(x => x.Name));
         }
         
         // Remove every VM that's not in the github registered runners
-        var remainingHtzServer = await _cc.GetAllServers();
-        foreach (var htzSrv in remainingHtzServer)
+        List<Server> remainingHtzServer = await _cc.GetAllServers();
+        foreach (Server htzSrv in remainingHtzServer)
         {
             if (registeredServerNames.Contains(htzSrv.Name))
             {

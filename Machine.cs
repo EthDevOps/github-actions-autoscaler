@@ -7,8 +7,8 @@ public class Machine
     public DateTime CreatedAt { get; set; } = DateTime.MinValue;
     public long Id { get; set; }
     public long JobId { get; set; }
-    public string? JobUrl { get; set; }
-    public string? RepoName { get; set; }
+    public string JobUrl { get; set; }
+    public string RepoName { get; set; }
     public DateTime JobPickedUpAt { get; set; } = DateTime.MinValue;
     public string OrgName { get; set; }
     public string Size { get; set; }

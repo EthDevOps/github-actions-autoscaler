@@ -1,7 +1,12 @@
+using System.Text.Json.Serialization;
+
 namespace GithubActionsOrchestrator;
 
 public class GitHubRunners
 {
-    public int total_count { get; set; }
-    public List<GitHubRunner> runners { get; set; }
+    [JsonPropertyName("total_count")]
+    public int TotalCount { get; set; }
+
+    [JsonPropertyName("runners")]
+    public List<GitHubRunner> Runners { get; set; }
 }
