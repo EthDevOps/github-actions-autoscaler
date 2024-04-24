@@ -242,7 +242,14 @@ public class PoolManager : BackgroundService
                 // If we know the server in github, skip
                 continue;
             }
-            _logger.LogInformation($"Removing VM that is not in any GitHub registration: {htzSrv.Name}");
+
+            if (DateTime.UtcNow - htzSrv.Created.ToUniversalTime() < TimeSpan.FromMinutes(30))
+            {
+                // VM younger than 30min - not culling yet
+                continue;
+            }
+            
+            _logger.LogInformation($"Removing VM that is not in any GitHub registration: {htzSrv.Name} created at {htzSrv.Created:u}");
             await _cc.DeleteRunner(htzSrv.Id);
         }
 
