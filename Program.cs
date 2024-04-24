@@ -117,13 +117,13 @@ public class Program
             }
             else
             {
-                logger.LogWarning("No Action found. rejecting.");
+                logger.LogDebug("No Action found. rejecting.");
                 return Results.StatusCode(201);
             }
 
             if (!json.RootElement.TryGetProperty("workflow_job", out var workflowJson))
             {
-                logger.LogWarning("Received a non-workflowJob request. Ignoring.");
+                logger.LogDebug("Received a non-workflowJob request. Ignoring.");
                 return Results.StatusCode(201);
             }
 
@@ -134,7 +134,7 @@ public class Program
 
             if (!isSelfHosted)
             {
-                logger.LogInformation($"Received a non self-hosted request. Ignoring. Labels: {string.Join('|', labels)}");
+                logger.LogDebug($"Received a non self-hosted request. Ignoring. Labels: {string.Join('|', labels)}");
                 return Results.StatusCode(201);
             }
 
@@ -146,7 +146,7 @@ public class Program
                 ?.OrgName;
             if (String.IsNullOrEmpty(orgName))
             {
-                logger.LogError($"Unknown organization: {orgName} - check setup. aborting.");
+                logger.LogWarning($"Unable to retrieve organization. aborting.");
                 return Results.StatusCode(201);
             }
 
