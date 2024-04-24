@@ -8,4 +8,7 @@ public record CreateRunnerTask
     public string OrgName { get; set; }
     public int RetryCount { get; set; }
     public long ServerId { get; set; }
+    public string ScriptName { get; set; }
+    public int ScriptVersion { get; set; }
+    public bool IsCustom { get; set; }
 }

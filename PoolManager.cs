@@ -198,7 +198,7 @@ public class PoolManager : BackgroundService
                             continue;
                         }
                         
-                        _logger.LogInformation($"Removing excess runner {r.name} from org {org.OrgName}");
+                        _logger.LogWarning($"Removing excess runner {r.name} from org {org.OrgName}");
                         await GitHubApi.RemoveRunner(org.OrgName, org.GitHubToken, r.id);
                         
                         long? htzSrvId = htzSrv?.Id;
@@ -218,7 +218,7 @@ public class PoolManager : BackgroundService
                 {
                     var r = idlePoolRunner.PopAt(0);
                     // Remove excess runners
-                    _logger.LogInformation($"Removing excess runner {r.name} from org {org.OrgName}");
+                    _logger.LogWarning($"Removing excess runner {r.name} from org {org.OrgName}");
                     await GitHubApi.RemoveRunner(org.OrgName, org.GitHubToken, r.id);
                     long? htzSrvId = allHtzSrvs.FirstOrDefault(x => x.Name == r.name)?.Id;
                     if (htzSrvId.HasValue)
@@ -242,7 +242,14 @@ public class PoolManager : BackgroundService
                 // If we know the server in github, skip
                 continue;
             }
-            _logger.LogInformation($"Removing VM that is not in any GitHub registration: {htzSrv.Name}");
+
+            if (DateTime.UtcNow - htzSrv.Created.ToUniversalTime() < TimeSpan.FromMinutes(30))
+            {
+                // Don't cull runners that are younger than 30 minutes
+                continue;
+            }
+            
+            _logger.LogWarning($"Removing VM that is not in any GitHub registration: {htzSrv.Name} created at {htzSrv.Created:u}");
             await _cc.DeleteRunner(htzSrv.Id);
         }
 
@@ -269,7 +276,7 @@ public class PoolManager : BackgroundService
     {
         try
         {
-            string newRunner = await _cc.CreateNewRunner(rt.Arch, rt.Size, rt.RunnerToken, rt.OrgName);
+            string newRunner = await _cc.CreateNewRunner(rt.Arch, rt.Size, rt.RunnerToken, rt.OrgName, rt.ScriptName, rt.ScriptVersion);
             _logger.LogInformation($"New Runner {newRunner} [{rt.Size} on {rt.Arch}] entering pool.");
             MachineCreatedCount.Labels(rt.OrgName, rt.Size).Inc();
             return true;

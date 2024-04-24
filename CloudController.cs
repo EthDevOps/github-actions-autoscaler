@@ -46,7 +46,7 @@ public class CloudController
         _logger.LogInformation("Controller init done.");
     }
 
-    public async Task<string> CreateNewRunner(string arch, string size, string runnerToken, string orgName)
+    public async Task<string> CreateNewRunner(string arch, string size, string runnerToken, string orgName, string scriptName, int scriptVersion)
     {
         
         // Select VM size for job - All AMD 
@@ -89,7 +89,6 @@ public class CloudController
         
         // Create new server
         string runnerVersion = "2.315.0";
-        string provisionVersion = "v1";
         
         string cloudInitcontent = new StringBuilder()
             .AppendLine("#cloud-config")
@@ -102,8 +101,10 @@ public class CloudController
             .AppendLine($"      export RUNNER_SIZE='{size}'")
             .AppendLine($"      export METRIC_USER='{_metricUser}'")
             .AppendLine($"      export METRIC_PASS='{_metricPassword}'")
+            .AppendLine($"      export SCRIPT_NAME='{scriptName}'")
+            .AppendLine($"      export SCRIPT_VERSION='{scriptVersion}'")
             .AppendLine("runcmd:")
-            .AppendLine($"  - [ sh, -xc, 'curl -fsSL {_provisionBaseUrl}/provision.{arch}.{provisionVersion}.sh -o /data/provision.sh']")
+            .AppendLine($"  - [ sh, -xc, 'curl -fsSL {_provisionBaseUrl}/provision.{scriptName}.{arch}.{scriptVersion}.sh -o /data/provision.sh']")
             .AppendLine($"  - [ sh, -xc, 'bash /data/provision.sh']")
             .ToString();
         var newSrv = await _client.Server.Create(eDataCenter.nbg1, imageId.Value, name, srvType.Value, userData: cloudInitcontent, sshKeysIds: srvKeys);

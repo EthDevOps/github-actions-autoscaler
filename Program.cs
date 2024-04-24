@@ -117,13 +117,13 @@ public class Program
             }
             else
             {
-                logger.LogWarning("No Action found. rejecting.");
+                logger.LogDebug("No Action found. rejecting.");
                 return Results.StatusCode(201);
             }
 
             if (!json.RootElement.TryGetProperty("workflow_job", out var workflowJson))
             {
-                logger.LogWarning("Received a non-workflowJob request. Ignoring.");
+                logger.LogDebug("Received a non-workflowJob request. Ignoring.");
                 return Results.StatusCode(201);
             }
 
@@ -134,7 +134,7 @@ public class Program
 
             if (!isSelfHosted)
             {
-                logger.LogInformation($"Received a non self-hosted request. Ignoring. Labels: {string.Join('|', labels)}");
+                logger.LogDebug($"Received a non self-hosted request. Ignoring. Labels: {string.Join('|', labels)}");
                 return Results.StatusCode(201);
             }
 
@@ -146,7 +146,7 @@ public class Program
                 ?.OrgName;
             if (String.IsNullOrEmpty(orgName))
             {
-                logger.LogError($"Unknown organization: {orgName} - check setup. aborting.");
+                logger.LogWarning("No organization. aborting.");
                 return Results.StatusCode(201);
             }
 
@@ -238,19 +238,36 @@ public class Program
                 arch = csize.Arch;
                 break;
             }
-
-            if (labels.Contains($"{csize.Name}-x64") || labels.Contains($"self-hosted-{csize.Name}-x64"))
-            {
-                size = csize.Name;
-                arch = csize.Arch;
-                break;
-            }
         }
+
+        bool customMode = labels.Contains("self-hosted-custom");
 
         if (string.IsNullOrEmpty(size))
         {
             logger.LogWarning($"No runner size specified for workflow in {repoName}. Ignoring.");
             return;
+        }
+
+        // Check for provisioning script label
+        string provisionLabel = labels.FirstOrDefault(x => x.StartsWith("provision-"));
+        string scriptName = "default";
+        int scriptVersion = 1;
+
+        try
+        {
+            if (customMode && !string.IsNullOrWhiteSpace(provisionLabel))
+            {
+                string[] labelParts = provisionLabel.Split('-');
+                scriptName = labelParts[1];
+                scriptVersion = int.Parse(labelParts[2].Substring(1));
+                logger.LogInformation($"Using non-default provisioning script: {scriptName} v{scriptVersion}");
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogError($"Unable to parse custom provisioning label. Falling back to default. Error: {ex.Message}");
+            scriptName = "default";
+            scriptVersion = 1;
         }
 
         // Create a new runner
@@ -273,7 +290,10 @@ public class Program
             Arch = arch,
             Size = size,
             RunnerToken = runnerToken,
-            OrgName = orgName
+            OrgName = orgName,
+            ScriptName = scriptName,
+            ScriptVersion = scriptVersion,
+            IsCustom = customMode
         });
 
         QueuedJobCount.Labels(orgName, size).Inc();
