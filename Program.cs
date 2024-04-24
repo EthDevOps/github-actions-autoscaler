@@ -226,9 +226,27 @@ public class Program
     {
         logger.LogInformation(
             $"New Workflow Job was queued for {repoName}. Queuing VM creation to replenish pool...");
-
+        
         string size = string.Empty;
-        string arch = String.Empty;
+        string arch = string.Empty;
+        string profileName = string.Empty;
+        bool isCustom = false;
+
+        // Check if this is a custom run
+        if (labels.Contains("self-hosted-custom"))
+        {
+            isCustom = true;
+            // Check for a profile label
+            string profileLabel = labels.FirstOrDefault(x => x.StartsWith("profile-"));
+            if (string.IsNullOrEmpty(profileName))
+            {
+                logger.LogError("No profile label given for custom mode. Ignoring.");
+                return;
+            }
+
+            profileName = profileLabel?.Split('-')[1];
+
+        }
         foreach (MachineSize csize in Config.Sizes)
         {
             if (labels.Contains(csize.Name) || labels.Contains($"self-hosted-{csize.Name}"))
@@ -272,7 +290,10 @@ public class Program
             Arch = arch,
             Size = size,
             RunnerToken = runnerToken,
-            OrgName = orgName
+            OrgName = orgName,
+            IsCustom = isCustom,
+            ProfileName = profileName
+            
         });
 
         QueuedJobCount.Labels(orgName, size).Inc();

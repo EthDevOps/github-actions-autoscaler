@@ -35,7 +35,7 @@ public class PoolManager : BackgroundService
         // Cull runners
         List<Server> allHtzSrvs = await _cc.GetAllServers();
 
-        await CullRunners(orgConfig, allHtzSrvs);
+        await CleanUpRunners(orgConfig, allHtzSrvs);
         await StartPoolRunners(orgConfig);
         _logger.LogInformation("Poolmanager init done.");
 
@@ -89,7 +89,7 @@ public class PoolManager : BackgroundService
             if (DateTime.UtcNow - crudeTimer > TimeSpan.FromMinutes(cullMinutes))
             {
                 _logger.LogInformation("Culling runners...");
-                await CullRunners(orgConfig, allHtzSrvs);
+                await CleanUpRunners(orgConfig, allHtzSrvs);
                 await StartPoolRunners(orgConfig);
                 crudeTimer = DateTime.UtcNow;
             }
@@ -161,7 +161,7 @@ public class PoolManager : BackgroundService
         }
     }
 
-    private async Task CullRunners(List<OrgConfiguration> orgConfig, List<Server> allHtzSrvs)
+    private async Task CleanUpRunners(List<OrgConfiguration> orgConfig, List<Server> allHtzSrvs)
     {
         List<string> registeredServerNames = new();
         foreach (OrgConfiguration org in orgConfig)
@@ -177,12 +177,13 @@ public class PoolManager : BackgroundService
 
             foreach (GitHubRunner runnerToRemove in ghOfflineRunners)
             {
-                var htzSrv = allHtzSrvs.FirstOrDefault(x => x.Name == runnerToRemove.Name);
+                Server htzSrv = allHtzSrvs.FirstOrDefault(x => x.Name == runnerToRemove.Name);
                 if (htzSrv != null && DateTime.UtcNow - htzSrv.Created.ToUniversalTime() < TimeSpan.FromMinutes(30))
                 {
                     // VM younger than 30min - not culling yet
                     continue;
                 }
+                
                 _logger.LogInformation($"Removing offline runner {runnerToRemove.Name} from org {org.OrgName}");
                 await GitHubApi.RemoveRunner(org.OrgName, org.GitHubToken, runnerToRemove.Id);
             }
@@ -281,7 +282,7 @@ public class PoolManager : BackgroundService
     {
         try
         {
-            string newRunner = await _cc.CreateNewRunner(rt.Arch, rt.Size, rt.RunnerToken, rt.OrgName);
+            string newRunner = await _cc.CreateNewRunner(rt.Arch, rt.Size, rt.RunnerToken, rt.OrgName, rt.IsCustom, rt.ProfileName);
             _logger.LogInformation($"New Runner {newRunner} [{rt.Size} on {rt.Arch}] entering pool.");
             MachineCreatedCount.Labels(rt.OrgName, rt.Size).Inc();
             return true;
