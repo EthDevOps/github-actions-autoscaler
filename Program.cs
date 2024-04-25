@@ -129,7 +129,7 @@ public class Program
             List<string> labels = workflowJson.GetProperty("labels").EnumerateArray()
                 .Select(x => x.GetString()).ToList();
 
-            bool isSelfHosted = labels.Any(x => x.StartsWith("self-hosted"));
+            bool isSelfHosted = labels.Any(x => x.StartsWith("self-hosted-ghr"));
 
             if (!isSelfHosted)
             {
@@ -167,7 +167,7 @@ public class Program
                         JobInProgress(workflowJson, logger, jobId, cloud, repoName, orgName);
                         break;
                     case "completed":
-                        JobCompleted(logger, jobId, cloud, poolMgr);
+                        JobCompleted(logger, jobId, cloud, poolMgr, repoName);
                         break;
                     default:
                         logger.LogWarning("Unknown action. Ignoring");
@@ -188,10 +188,10 @@ public class Program
         app.Run();
     }
 
-    private static void JobCompleted(ILogger<Program> logger, long jobId, CloudController cloud, RunnerQueue poolMgr)
+    private static void JobCompleted(ILogger<Program> logger, long jobId, CloudController cloud, RunnerQueue poolMgr, string repoName)
     {
         logger.LogInformation(
-            $"Workflow Job {jobId} has completed. Queuing deletion VM associated with Job...");
+            $"Workflow Job {jobId} in repo {repoName} has completed. Queuing deletion of VM associated with Job.");
         Machine vm = cloud.GetInfoForJob(jobId);
         if (vm == null)
         {
@@ -215,7 +215,7 @@ public class Program
     {
         string runnerName = workflowJson.GetProperty("runner_name").GetString();
         string jobUrl = workflowJson.GetProperty("url").GetString();
-        logger.LogInformation($"Workflow Job {jobId} now in progress on {runnerName}");
+        logger.LogInformation($"Workflow Job {jobId} in repo {repoName} now in progress on {runnerName}");
         cloud.AddJobClaimToRunner(runnerName, jobId, jobUrl, repoName);
 
         string jobSize = cloud.GetInfoForJob(jobId)?.Size;
@@ -233,7 +233,7 @@ public class Program
         bool isCustom = false;
 
         // Check if this is a custom run
-        if (labels.Contains("self-hosted-custom"))
+        if (labels.Contains("self-hosted-ghr-custom"))
         {
             isCustom = true;
             // Check for a profile label
@@ -249,14 +249,7 @@ public class Program
         }
         foreach (MachineSize csize in Config.Sizes)
         {
-            if (labels.Contains(csize.Name) || labels.Contains($"self-hosted-{csize.Name}"))
-            {
-                size = csize.Name;
-                arch = csize.Arch;
-                break;
-            }
-
-            if (labels.Contains($"{csize.Name}-x64") || labels.Contains($"self-hosted-{csize.Name}-x64"))
+            if (labels.Contains(csize.Name) || labels.Contains($"self-hosted-ghr-{csize.Name}"))
             {
                 size = csize.Name;
                 arch = csize.Arch;
