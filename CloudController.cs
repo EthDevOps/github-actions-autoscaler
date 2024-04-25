@@ -47,7 +47,7 @@ public class CloudController
         _logger.LogInformation("Controller init done.");
     }
 
-    public async Task<string> CreateNewRunner(string arch, string size, string runnerToken, string orgName)
+    public async Task<string> CreateNewRunner(string arch, string size, string runnerToken, string orgName, bool isCustom = false, string profileName = "default")
     {
         
         // Select VM size for job - All AMD 
@@ -58,9 +58,28 @@ public class CloudController
             throw new Exception($"Unknown arch and size combination [{arch}/{size}]");
         }
 
+        RunnerProfile profile;
         // Build image name
+        if (isCustom)
+        {
+            // Load profile info
+            profile = Program.Config.Profiles.FirstOrDefault(x => x.Name == profileName);
+        }
+        else
+        {
+            // Load default profile
+            profile = Program.Config.Profiles.FirstOrDefault(x => x.Name == "default");
+        }
+
+        if (profile == null)
+        {
+            throw new Exception($"Unable to load profile: {profileName}");
+        }
+        
         //string imageName = $"gh-actions-img-{arch}-{imageVersion}";
-        string imageName = "Ubuntu 22.04";
+        string imageName = profile.IsCustomImage ? $"ghri-{profile.OsImageName}-{arch}" : profile.OsImageName;
+        
+        
         string name = $"ghr-{NameGenerator.Identifiers.Get(separator: "-")}".ToLower();
         
         _logger.LogInformation($"Creating VM {name} from image {imageName} of size {size}");
@@ -90,7 +109,8 @@ public class CloudController
         
         // Create new server
         string runnerVersion = "2.315.0";
-        string provisionVersion = "v1";
+        string provisionVersion = $"v{profile.ScriptVersion}";
+        string customEnv = isCustom ? "1" : "0";
         
         string cloudInitcontent = new StringBuilder()
             .AppendLine("#cloud-config")
@@ -103,8 +123,10 @@ public class CloudController
             .AppendLine($"      export RUNNER_SIZE='{size}'")
             .AppendLine($"      export METRIC_USER='{_metricUser}'")
             .AppendLine($"      export METRIC_PASS='{_metricPassword}'")
+            .AppendLine($"      export GH_PROFILE_NAME='{profile.Name}'")
+            .AppendLine($"      export GH_IS_CUSTOM='{customEnv}'")
             .AppendLine("runcmd:")
-            .AppendLine($"  - [ sh, -xc, 'curl -fsSL {_provisionBaseUrl}/provision.{arch}.{provisionVersion}.sh -o /data/provision.sh']")
+            .AppendLine($"  - [ sh, -xc, 'curl -fsSL {_provisionBaseUrl}/provision.{profile.ScriptName}.{arch}.{provisionVersion}.sh -o /data/provision.sh']")
             .AppendLine("  - [ sh, -xc, 'bash /data/provision.sh']")
             .ToString();
         Server newSrv = await _client.Server.Create(eDataCenter.nbg1, imageId.Value, name, srvType.Value, userData: cloudInitcontent, sshKeysIds: srvKeys);
