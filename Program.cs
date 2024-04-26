@@ -238,7 +238,7 @@ public class Program
             isCustom = true;
             // Check for a profile label
             string profileLabel = labels.FirstOrDefault(x => x.StartsWith("profile-"));
-            if (string.IsNullOrEmpty(profileName))
+            if (string.IsNullOrEmpty(profileLabel))
             {
                 logger.LogError("No profile label given for custom mode. Ignoring.");
                 return;

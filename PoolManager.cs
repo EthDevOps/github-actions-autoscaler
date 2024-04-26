@@ -93,23 +93,29 @@ public class PoolManager : BackgroundService
                 await StartPoolRunners(orgConfig);
                 crudeTimer = DateTime.UtcNow;
             }
-           
-            
-            if (_queues.DeleteTasks.TryDequeue(out DeleteRunnerTask dtask))
+
+            int deleteQueueSize = _queues.DeleteTasks.Count;
+            // Run down the deletion queue in completion to potentially free up resources on HTZ cloud
+            for (int i = 0; i < deleteQueueSize; i++)
             {
-                _logger.LogInformation($"Current Queue length: C:{_queues.CreateTasks.Count} D:{_queues.DeleteTasks.Count}");
+                if (!_queues.DeleteTasks.TryDequeue(out DeleteRunnerTask dtask)) continue;
+                
+                _logger.LogInformation(
+                    $"Current Queue length: C:{_queues.CreateTasks.Count} D:{_queues.DeleteTasks.Count}");
                 if (dtask != null)
                 {
                     bool success = await DeleteRunner(dtask);
                     if (!success)
                     {
                         // Deletion didn't succeed. Let's hold processing runners for a minute
-                        _logger.LogWarning("Encountered a problem deleting runners. Will hold queue processing for 1 minute.");
-                        await Task.Delay(TimeSpan.FromMinutes(1), stoppingToken);
+                        _logger.LogWarning(
+                            "Encountered a problem deleting runners. Will hold queue processing for 10 seconds.");
+                        await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
                     }
                 }
+                await Task.Delay(TimeSpan.FromMilliseconds(500), stoppingToken);
             }
-            
+
             if (_queues.CreateTasks.TryDequeue(out CreateRunnerTask task))
             {
                 _logger.LogInformation($"Current Queue length: C:{_queues.CreateTasks.Count} D:{_queues.DeleteTasks.Count}");
@@ -119,13 +125,13 @@ public class PoolManager : BackgroundService
                     if (!success)
                     {
                         // Creation didn't succeed. Let's hold of creating new runners for a minute
-                        _logger.LogWarning("Encountered a problem creating runners. Will hold queue processing for 1 minute.");
-                        await Task.Delay(TimeSpan.FromMinutes(1), stoppingToken);
+                        _logger.LogWarning("Encountered a problem creating runners. Will hold queue processing for 10 seconds.");
+                        await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
                     }
                 }
             }
 
-            await Task.Delay(1000, stoppingToken);
+            await Task.Delay(250, stoppingToken);
         }
     }
 
