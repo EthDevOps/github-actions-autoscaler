@@ -47,7 +47,7 @@ public class CloudController
         _logger.LogInformation("Controller init done.");
     }
 
-    public async Task<string> CreateNewRunner(string arch, string size, string runnerToken, string orgName, bool isCustom = false, string profileName = "default")
+    public async Task<string> CreateNewRunner(string arch, string size, string runnerToken, string targetName, bool isCustom = false, string profileName = "default")
     {
         
         // Select VM size for job - All AMD 
@@ -118,7 +118,7 @@ public class CloudController
             .AppendLine("  - path: /data/config.env")
             .AppendLine("    content: |")
             .AppendLine($"      export GH_VERSION='{runnerVersion}'")
-            .AppendLine($"      export ORG_NAME='{orgName}'")
+            .AppendLine($"      export ORG_NAME='{targetName}'")
             .AppendLine($"      export GH_TOKEN='{runnerToken}'")
             .AppendLine($"      export RUNNER_SIZE='{size}'")
             .AppendLine($"      export METRIC_USER='{_metricUser}'")
@@ -136,7 +136,7 @@ public class CloudController
             Name = newSrv.Name,
             Ipv4 = newSrv.PublicNet.Ipv4.Ip,
             CreatedAt = DateTime.UtcNow,
-            OrgName = orgName,
+            TargetName = targetName,
             Size = size,
             Arch = arch
         });
@@ -158,7 +158,7 @@ public class CloudController
         }
         
         var grouped = _activeRunners
-            .GroupBy(m => new { m.OrgName, m.Size })
+            .GroupBy(m => new { OrgName = m.TargetName, m.Size })
             .Select(g => new
             {
                 g.Key.OrgName,
@@ -167,17 +167,17 @@ public class CloudController
             })
             .ToList();
 
-        foreach (OrgConfiguration oc in Program.Config.OrgConfigs)
+        foreach (GithubTargetConfiguration oc in Program.Config.TargetConfigs)
         {
             foreach (MachineSize ms in Program.Config.Sizes)
             {
                 int ct = 0;
-                var am = grouped.FirstOrDefault(x => x.OrgName == oc.OrgName && x.Size == ms.Name);
+                var am = grouped.FirstOrDefault(x => x.OrgName == oc.Name && x.Size == ms.Name);
                 if (am != null)
                 {
                     ct = am.Count;
                 }
-                ActiveMachinesCount.Labels(oc.OrgName, ms.Name).Set(ct);
+                ActiveMachinesCount.Labels(oc.Name, ms.Name).Set(ct);
             }
         }
  
@@ -275,8 +275,8 @@ public class CloudController
         return srvs;
     }
 
-    public List<Machine> GetRunnersForOrg(string orgName)
+    public List<Machine> GetRunnersForTarget(string orgName)
     {
-        return _activeRunners.Where(x => x.OrgName == orgName).ToList();
+        return _activeRunners.Where(x => x.TargetName == orgName).ToList();
     }
 }

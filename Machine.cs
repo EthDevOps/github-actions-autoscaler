@@ -10,7 +10,7 @@ public class Machine
     public string JobUrl { get; set; }
     public string RepoName { get; set; }
     public DateTime JobPickedUpAt { get; set; } = DateTime.MinValue;
-    public string OrgName { get; set; }
+    public string TargetName { get; set; }
     public string Size { get; set; }
     public string Arch { get; set; }
 }
