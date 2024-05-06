@@ -108,7 +108,7 @@ public class CloudController
         List<long> srvKeys = sshKeys.Select(x => x.Id).ToList();
         
         // Create new server
-        string runnerVersion = "2.315.0";
+        string runnerVersion = "2.316.1";
         string provisionVersion = $"v{profile.ScriptVersion}";
         string customEnv = isCustom ? "1" : "0";
         
