@@ -146,9 +146,16 @@ public class Program
             }
 
             long jobId = workflowJson.GetProperty("id").GetInt64();
-            string repoName = json.RootElement.GetProperty("repository").GetProperty("full_name").GetString();
-            string orgName = json.RootElement.GetProperty("organization").GetProperty("login").GetString();
+            string repoNameRequest = json.RootElement.GetProperty("repository").GetProperty("full_name").GetString();
+            string orgNameRequest = json.RootElement.GetProperty("organization").GetProperty("login").GetString();
 
+            // Needed to get properly cased names
+            string orgName = Config.TargetConfigs.FirstOrDefault(x =>
+                x.Target == TargetType.Organization && x.Name.ToLower() == orgNameRequest.ToLower()).Name;
+            string repoName = Config.TargetConfigs.FirstOrDefault(x =>
+                x.Target == TargetType.Repository && x.Name.ToLower() == repoNameRequest.ToLower())?.Name ?? repoNameRequest;
+            
+            
             // Check if its an org or a repo
             if (String.IsNullOrEmpty(orgName))
             {
@@ -157,8 +164,8 @@ public class Program
             }
 
             // Check if Org is configured
-            bool isOrg = Config.TargetConfigs.Any(x => x.Name.ToLower() == orgName.ToLower() && x.Target == TargetType.Organization);
-            bool isRepo = Config.TargetConfigs.Any(x => x.Name.ToLower() == repoName.ToLower() && x.Target == TargetType.Repository);
+            bool isOrg = Config.TargetConfigs.Any(x => x.Name == orgName && x.Target == TargetType.Organization);
+            bool isRepo = Config.TargetConfigs.Any(x => x.Name == repoName && x.Target == TargetType.Repository);
             
             if (!isOrg && !isRepo)
             {
