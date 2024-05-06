@@ -151,7 +151,7 @@ public class Program
 
             // Needed to get properly cased names
             string orgName = Config.TargetConfigs.FirstOrDefault(x =>
-                x.Target == TargetType.Organization && x.Name.ToLower() == orgNameRequest.ToLower()).Name;
+                x.Target == TargetType.Organization && x.Name.ToLower() == orgNameRequest.ToLower())?.Name ?? orgNameRequest;
             string repoName = Config.TargetConfigs.FirstOrDefault(x =>
                 x.Target == TargetType.Repository && x.Name.ToLower() == repoNameRequest.ToLower())?.Name ?? repoNameRequest;
             
