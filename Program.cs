@@ -157,8 +157,8 @@ public class Program
             }
 
             // Check if Org is configured
-            bool isOrg = Config.TargetConfigs.Any(x => x.Name == orgName && x.Target == TargetType.Organization);
-            bool isRepo = Config.TargetConfigs.Any(x => x.Name == repoName && x.Target == TargetType.Repository);
+            bool isOrg = Config.TargetConfigs.Any(x => x.Name.ToLower() == orgName.ToLower() && x.Target == TargetType.Organization);
+            bool isRepo = Config.TargetConfigs.Any(x => x.Name.ToLower() == repoName.ToLower() && x.Target == TargetType.Repository);
             
             if (!isOrg && !isRepo)
             {

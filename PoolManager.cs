@@ -94,7 +94,7 @@ public class PoolManager : BackgroundService
             // check for culling interval
             if (DateTime.UtcNow - crudeTimer > TimeSpan.FromMinutes(cullMinutes))
             {
-                _logger.LogInformation("Culling runners...");
+                _logger.LogInformation("Cleaning runners...");
                 await CleanUpRunners(targetConfig, allHtzSrvs);
                 await StartPoolRunners(targetConfig);
                 crudeTimer = DateTime.UtcNow;
@@ -105,9 +105,6 @@ public class PoolManager : BackgroundService
             for (int i = 0; i < deleteQueueSize; i++)
             {
                 if (!_queues.DeleteTasks.TryDequeue(out DeleteRunnerTask dtask)) continue;
-                
-                _logger.LogInformation(
-                    $"Current Queue length: C:{_queues.CreateTasks.Count} D:{_queues.DeleteTasks.Count}");
                 if (dtask != null)
                 {
                     bool success = await DeleteRunner(dtask);
@@ -124,7 +121,6 @@ public class PoolManager : BackgroundService
 
             if (_queues.CreateTasks.TryDequeue(out CreateRunnerTask task))
             {
-                _logger.LogInformation($"Current Queue length: C:{_queues.CreateTasks.Count} D:{_queues.DeleteTasks.Count}");
                 if (task != null)
                 {
                     bool success = await CreateRunner(task);
@@ -173,7 +169,10 @@ public class PoolManager : BackgroundService
                         RunnerToken = runnerToken,
                         OrgName = tgt.Name,
                         RepoName = tgt.Name,
-                        TargetType = tgt.Target
+                        TargetType = tgt.Target,
+                        IsCustom = pool.Profile != "default",
+                        ProfileName = pool.Profile
+                        
                     }); 
                     _logger.LogInformation($"[{i+1}/{missingCt}] Queued {pool.Size} runner for {tgt.Name}");
                 }

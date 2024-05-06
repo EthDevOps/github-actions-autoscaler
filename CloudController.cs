@@ -82,7 +82,7 @@ public class CloudController
         
         string name = $"ghr-{NameGenerator.Identifiers.Get(separator: "-")}".ToLower();
         
-        _logger.LogInformation($"Creating VM {name} from image {imageName} of size {size}");
+        _logger.LogInformation($"Creating VM {name} from image {imageName} of size {size} for {targetName}");
 
         string htzArch = "x86";
         if (arch == "arm64")
@@ -141,7 +141,6 @@ public class CloudController
             Arch = arch
         });
         StoreActiveRunners();
-        _logger.LogInformation($"VM {name} created.");
         return newSrv.Name;
     }
 
