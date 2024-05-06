@@ -254,23 +254,51 @@ public class PoolManager : BackgroundService
             foreach (Pool pool in githubTarget.Pools)
             {
                 // get all idle runners of size
-                List<GitHubRunner> idlePoolRunner = ghIdleRunners.Where(x => x.Labels.Any(y => y.Name == pool.Size)).ToList();
-                while (idlePoolRunner.Count > pool.NumRunners)
+                if (pool.Profile == "default")
                 {
-                    GitHubRunner r = idlePoolRunner.PopAt(0);
-                    // Remove excess runners
-                    _logger.LogInformation($"Removing excess runner {r.Name} from {githubTarget.Name}");
-                    bool _ = githubTarget.Target switch
+                    List<GitHubRunner> idlePoolRunner = ghIdleRunners.Where(x => x.Labels.Any(y => y.Name == pool.Size)).ToList();
+                    while (idlePoolRunner.Count > pool.NumRunners)
                     {
-                        TargetType.Organization => await GitHubApi.RemoveRunnerFromOrg(githubTarget.Name, githubTarget.GitHubToken, r.Id),
-                        TargetType.Repository => await GitHubApi.RemoveRunnerFromRepo(githubTarget.Name, githubTarget.GitHubToken, r.Id),
-                        _ => throw new ArgumentOutOfRangeException()
-                    };
-                    long? htzSrvId = allHtzSrvs.FirstOrDefault(x => x.Name == r.Name)?.Id;
-                    if (htzSrvId.HasValue)
-                    {
-                        await _cc.DeleteRunner(htzSrvId.Value);
+                        GitHubRunner r = idlePoolRunner.PopAt(0);
+                        // Remove excess runners
+                        _logger.LogInformation($"Removing excess runner {r.Name} from {githubTarget.Name}");
+                        bool _ = githubTarget.Target switch
+                        {
+                            TargetType.Organization => await GitHubApi.RemoveRunnerFromOrg(githubTarget.Name, githubTarget.GitHubToken, r.Id),
+                            TargetType.Repository => await GitHubApi.RemoveRunnerFromRepo(githubTarget.Name, githubTarget.GitHubToken, r.Id),
+                            _ => throw new ArgumentOutOfRangeException()
+                        };
+                        long? htzSrvId = allHtzSrvs.FirstOrDefault(x => x.Name == r.Name)?.Id;
+                        if (htzSrvId.HasValue)
+                        {
+                            await _cc.DeleteRunner(htzSrvId.Value);
+                        }
                     }
+                }
+                else
+                {
+                    List<GitHubRunner> idlePoolRunner = ghIdleRunners.Where(x => 
+                        x.Labels.Any(y => y.Name == pool.Size) &&
+                        x.Labels.Any(y => y.Name == $"profile-{pool.Profile}")
+                        ).ToList();
+                    while (idlePoolRunner.Count > pool.NumRunners)
+                    {
+                        GitHubRunner r = idlePoolRunner.PopAt(0);
+                        // Remove excess runners
+                        _logger.LogInformation($"Removing excess runner {r.Name} from {githubTarget.Name}");
+                        bool _ = githubTarget.Target switch
+                        {
+                            TargetType.Organization => await GitHubApi.RemoveRunnerFromOrg(githubTarget.Name, githubTarget.GitHubToken, r.Id),
+                            TargetType.Repository => await GitHubApi.RemoveRunnerFromRepo(githubTarget.Name, githubTarget.GitHubToken, r.Id),
+                            _ => throw new ArgumentOutOfRangeException()
+                        };
+                        long? htzSrvId = allHtzSrvs.FirstOrDefault(x => x.Name == r.Name)?.Id;
+                        if (htzSrvId.HasValue)
+                        {
+                            await _cc.DeleteRunner(htzSrvId.Value);
+                        }
+                    }
+                    
                 }
             }
             
