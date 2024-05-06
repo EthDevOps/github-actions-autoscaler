@@ -30,13 +30,13 @@ public class PoolManager : BackgroundService
         _logger.LogInformation("PoolManager online.");
         _logger.LogInformation("Queuing base load runner start...");
 
-        List<OrgConfiguration> orgConfig = Program.Config.OrgConfigs;
+        List<GithubTargetConfiguration> targetConfig = Program.Config.TargetConfigs;
         
         // Cull runners
         List<Server> allHtzSrvs = await _cc.GetAllServers();
 
-        await CleanUpRunners(orgConfig, allHtzSrvs);
-        await StartPoolRunners(orgConfig);
+        await CleanUpRunners(targetConfig, allHtzSrvs);
+        await StartPoolRunners(targetConfig);
         _logger.LogInformation("Poolmanager init done.");
 
         // Kick the PoolManager into background
@@ -52,12 +52,18 @@ public class PoolManager : BackgroundService
 
             try
             {
-                foreach (OrgConfiguration org in orgConfig)
+                foreach (GithubTargetConfiguration tgt in targetConfig)
                 {
-                    GithubRunnersGauge.Labels(org.OrgName, "active").Set(0);
-                    GithubRunnersGauge.Labels(org.OrgName, "idle").Set(0);
-                    GithubRunnersGauge.Labels(org.OrgName, "offline").Set(0);
-                    GitHubRunners orgRunners = await GitHubApi.GetRunners(org.GitHubToken, org.OrgName);
+                    GithubRunnersGauge.Labels(tgt.Name, "active").Set(0);
+                    GithubRunnersGauge.Labels(tgt.Name, "idle").Set(0);
+                    GithubRunnersGauge.Labels(tgt.Name, "offline").Set(0);
+                    GitHubRunners orgRunners = tgt.Target switch
+                    {
+                        TargetType.Repository => await GitHubApi.GetRunnersForRepo(tgt.GitHubToken, tgt.Name),
+                        TargetType.Organization => await GitHubApi.GetRunnersForOrg(tgt.GitHubToken, tgt.Name),
+                        _ => throw new ArgumentOutOfRangeException()
+                    };
+                    
                     var ghStatus = orgRunners.Runners.Where(x => x.Name.StartsWith("ghr")).GroupBy(x =>
                     {
                         if (x.Busy)
@@ -74,7 +80,7 @@ public class PoolManager : BackgroundService
                     }).Select(x => new { Status = x.Key, Count = x.Count() });
                     foreach (var ghs in ghStatus)
                     {
-                        GithubRunnersGauge.Labels(org.OrgName, ghs.Status).Set(ghs.Count);
+                        GithubRunnersGauge.Labels(tgt.Name, ghs.Status).Set(ghs.Count);
                     }
 
                 }
@@ -89,8 +95,8 @@ public class PoolManager : BackgroundService
             if (DateTime.UtcNow - crudeTimer > TimeSpan.FromMinutes(cullMinutes))
             {
                 _logger.LogInformation("Culling runners...");
-                await CleanUpRunners(orgConfig, allHtzSrvs);
-                await StartPoolRunners(orgConfig);
+                await CleanUpRunners(targetConfig, allHtzSrvs);
+                await StartPoolRunners(targetConfig);
                 crudeTimer = DateTime.UtcNow;
             }
 
@@ -135,16 +141,22 @@ public class PoolManager : BackgroundService
         }
     }
 
-    private async Task StartPoolRunners(List<OrgConfiguration> orgConfig)
+    private async Task StartPoolRunners(List<GithubTargetConfiguration> targetConfig)
     {
         // Start pool runners
-        foreach (OrgConfiguration org in orgConfig)
+        foreach (GithubTargetConfiguration tgt in targetConfig)
         {
-            _logger.LogInformation($"Checking pool runners for {org.OrgName}");
-            string runnerToken = await GitHubApi.GetRunnerToken(org.GitHubToken, org.OrgName);
-            List<Machine> existingRunners = _cc.GetRunnersForOrg(org.OrgName);
+            _logger.LogInformation($"Checking pool runners for {tgt.Name}");
+            string runnerToken = tgt.Target switch
+            {
+                TargetType.Repository => await GitHubApi.GetRunnerTokenForRepo(tgt.GitHubToken, tgt.Name),
+                TargetType.Organization => await GitHubApi.GetRunnerTokenForOrg(tgt.GitHubToken, tgt.Name),
+                _ => throw new ArgumentOutOfRangeException()
+            };
+                
+            List<Machine> existingRunners = _cc.GetRunnersForTarget(tgt.Name);
             
-            foreach (Pool pool in org.Pools)
+            foreach (Pool pool in tgt.Pools)
             {
                 int existCt = existingRunners.Count(x => x.Size == pool.Size);
                 int missingCt = pool.NumRunners - existCt;
@@ -159,24 +171,31 @@ public class PoolManager : BackgroundService
                         Arch = arch,
                         Size = pool.Size,
                         RunnerToken = runnerToken,
-                        OrgName = org.OrgName
+                        OrgName = tgt.Name,
+                        RepoName = tgt.Name,
+                        TargetType = tgt.Target
                     }); 
-                    _logger.LogInformation($"[{i+1}/{missingCt}] Queued {pool.Size} runner for {org.OrgName}");
+                    _logger.LogInformation($"[{i+1}/{missingCt}] Queued {pool.Size} runner for {tgt.Name}");
                 }
             }
         }
     }
 
-    private async Task CleanUpRunners(List<OrgConfiguration> orgConfig, List<Server> allHtzSrvs)
+    private async Task CleanUpRunners(List<GithubTargetConfiguration> targetConfigs, List<Server> allHtzSrvs)
     {
         List<string> registeredServerNames = new();
-        foreach (OrgConfiguration org in orgConfig)
+        foreach (GithubTargetConfiguration githubTarget in targetConfigs)
         {
-            _logger.LogInformation($"Culling runners for {org.OrgName}...");
+            _logger.LogInformation($"Cleaning runners for {githubTarget.Name}...");
 
             // Get runner infos
-            GitHubRunners githubRunners = await GitHubApi.GetRunners(org.GitHubToken, org.OrgName);
-           
+            GitHubRunners githubRunners = githubTarget.Target switch
+            {
+                TargetType.Organization => await GitHubApi.GetRunnersForOrg(githubTarget.GitHubToken, githubTarget.Name),
+                TargetType.Repository => await GitHubApi.GetRunnersForRepo(githubTarget.GitHubToken, githubTarget.Name),
+                _ => throw new ArgumentOutOfRangeException()
+            };
+
             // Remove all offline runner entries from GitHub
             List<GitHubRunner> ghOfflineRunners = githubRunners.Runners.Where(x => x.Name.StartsWith("ghr") && x.Status == "offline").ToList();
             List<GitHubRunner> ghIdleRunners = githubRunners.Runners.Where(x => x.Name.StartsWith("ghr") && x is { Status: "online", Busy: false }).ToList();
@@ -186,19 +205,25 @@ public class PoolManager : BackgroundService
                 Server htzSrv = allHtzSrvs.FirstOrDefault(x => x.Name == runnerToRemove.Name);
                 if (htzSrv != null && DateTime.UtcNow - htzSrv.Created.ToUniversalTime() < TimeSpan.FromMinutes(30))
                 {
-                    // VM younger than 30min - not culling yet
+                    // VM younger than 30min - not cleaning yet
                     continue;
                 }
                 
-                _logger.LogInformation($"Removing offline runner {runnerToRemove.Name} from org {org.OrgName}");
-                await GitHubApi.RemoveRunner(org.OrgName, org.GitHubToken, runnerToRemove.Id);
+                _logger.LogInformation($"Removing offline runner {runnerToRemove.Name} from org {githubTarget.Name}");
+                bool _ = githubTarget.Target switch
+                {
+                    TargetType.Organization => await GitHubApi.RemoveRunnerFromOrg(githubTarget.Name, githubTarget.GitHubToken, runnerToRemove.Id),
+                    TargetType.Repository => await GitHubApi.RemoveRunnerFromRepo(githubTarget.Name, githubTarget.GitHubToken, runnerToRemove.Id),
+                    _ => throw new ArgumentOutOfRangeException()
+                };
+
             }
            
             // Check how many base runners should be around and idle
             foreach (MachineSize size in Program.Config.Sizes)
             {
                 List<GitHubRunner> idlePoolRunner = ghIdleRunners.Where(x => x.Labels.Any(y => y.Name == size.Name)).ToList();
-                if (org.Pools.All(x => x.Size != size.Name))
+                if (githubTarget.Pools.All(x => x.Size != size.Name))
                 {
                     // Non of this size exists in pool. Remove all 
                     foreach (GitHubRunner r in idlePoolRunner)
@@ -206,12 +231,17 @@ public class PoolManager : BackgroundService
                         Server htzSrv = allHtzSrvs.FirstOrDefault(x => x.Name == r.Name);
                         if (htzSrv != null && DateTime.Now - htzSrv.Created < TimeSpan.FromMinutes(15))
                         {
-                            // Don't cull a recently created runner. there might be a job waiting for pickup
+                            // Don't clean a recently created runner. there might be a job waiting for pickup
                             continue;
                         }
                         
-                        _logger.LogInformation($"Removing excess runner {r.Name} from org {org.OrgName}");
-                        await GitHubApi.RemoveRunner(org.OrgName, org.GitHubToken, r.Id);
+                        _logger.LogInformation($"Removing excess runner {r.Name} from {githubTarget.Name}");
+                        bool _ = githubTarget.Target switch
+                        {
+                            TargetType.Organization => await GitHubApi.RemoveRunnerFromOrg(githubTarget.Name, githubTarget.GitHubToken, r.Id),
+                            TargetType.Repository => await GitHubApi.RemoveRunnerFromRepo(githubTarget.Name, githubTarget.GitHubToken, r.Id),
+                            _ => throw new ArgumentOutOfRangeException()
+                        };
                         
                         long? htzSrvId = htzSrv?.Id;
                         if (htzSrvId.HasValue)
@@ -222,7 +252,7 @@ public class PoolManager : BackgroundService
                 }
                
             }
-            foreach (Pool pool in org.Pools)
+            foreach (Pool pool in githubTarget.Pools)
             {
                 // get all idle runners of size
                 List<GitHubRunner> idlePoolRunner = ghIdleRunners.Where(x => x.Labels.Any(y => y.Name == pool.Size)).ToList();
@@ -230,8 +260,13 @@ public class PoolManager : BackgroundService
                 {
                     GitHubRunner r = idlePoolRunner.PopAt(0);
                     // Remove excess runners
-                    _logger.LogInformation($"Removing excess runner {r.Name} from org {org.OrgName}");
-                    await GitHubApi.RemoveRunner(org.OrgName, org.GitHubToken, r.Id);
+                    _logger.LogInformation($"Removing excess runner {r.Name} from {githubTarget.Name}");
+                    bool _ = githubTarget.Target switch
+                    {
+                        TargetType.Organization => await GitHubApi.RemoveRunnerFromOrg(githubTarget.Name, githubTarget.GitHubToken, r.Id),
+                        TargetType.Repository => await GitHubApi.RemoveRunnerFromRepo(githubTarget.Name, githubTarget.GitHubToken, r.Id),
+                        _ => throw new ArgumentOutOfRangeException()
+                    };
                     long? htzSrvId = allHtzSrvs.FirstOrDefault(x => x.Name == r.Name)?.Id;
                     if (htzSrvId.HasValue)
                     {
@@ -241,7 +276,12 @@ public class PoolManager : BackgroundService
             }
             
             // Get remaining runners registered to github
-            githubRunners = await GitHubApi.GetRunners(org.GitHubToken, org.OrgName);
+            githubRunners = githubTarget.Target switch
+            {
+                TargetType.Organization => await GitHubApi.GetRunnersForOrg(githubTarget.GitHubToken, githubTarget.Name),
+                TargetType.Repository => await GitHubApi.GetRunnersForRepo(githubTarget.GitHubToken, githubTarget.Name),
+                _ => throw new ArgumentOutOfRangeException()
+            };
             registeredServerNames.AddRange(githubRunners.Runners.Where(x => x.Name.StartsWith("ghr")).Select(x => x.Name));
         }
         
@@ -257,7 +297,7 @@ public class PoolManager : BackgroundService
 
             if (DateTime.UtcNow - htzSrv.Created.ToUniversalTime() < TimeSpan.FromMinutes(30))
             {
-                // VM younger than 30min - not culling yet
+                // VM younger than 30min - not cleaning yet
                 continue;
             }
             
@@ -288,8 +328,14 @@ public class PoolManager : BackgroundService
     {
         try
         {
-            string newRunner = await _cc.CreateNewRunner(rt.Arch, rt.Size, rt.RunnerToken, rt.OrgName, rt.IsCustom, rt.ProfileName);
-            _logger.LogInformation($"New Runner {newRunner} [{rt.Size} on {rt.Arch}] entering pool.");
+            string targetName = rt.TargetType switch
+            {
+                TargetType.Repository => rt.RepoName,
+                TargetType.Organization => rt.OrgName,
+                _ => throw new ArgumentOutOfRangeException()
+            };
+            string newRunner = await _cc.CreateNewRunner(rt.Arch, rt.Size, rt.RunnerToken, targetName, rt.IsCustom, rt.ProfileName);
+            _logger.LogInformation($"New Runner {newRunner} [{rt.Size} on {rt.Arch}] entering pool for {targetName}.");
             MachineCreatedCount.Labels(rt.OrgName, rt.Size).Inc();
             return true;
         }

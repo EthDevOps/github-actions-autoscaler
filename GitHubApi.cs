@@ -1,10 +1,12 @@
 using System.Net.Http.Headers;
 using System.Text.Json;
+using Serilog;
+using Serilog.Core;
 
 namespace GithubActionsOrchestrator;
 
 public static class GitHubApi {
-    public static async Task<GitHubRunners> GetRunners(string githubToken, string orgName)
+    public static async Task<GitHubRunners> GetRunnersForOrg(string githubToken, string orgName)
     {
         
         // Register a runner with github
@@ -26,7 +28,30 @@ public static class GitHubApi {
 
         return null;
     }
-    public static async Task<string> GetRunnerToken(string githubToken, string orgName)
+    public static async Task<GitHubRunners> GetRunnersForRepo(string githubToken, string repoName)
+    {
+        
+        // Register a runner with github
+        using HttpClient client = new();
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+        client.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
+        client.DefaultRequestHeaders.Authorization = AuthenticationHeaderValue.Parse($"Bearer {githubToken}");
+        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("hetzner-autoscale", "1")); 
+            
+        HttpResponseMessage response = await client.GetAsync(
+            $"https://api.github.com/repos/{repoName}/actions/runners");
+
+        if(response.IsSuccessStatusCode)
+        {
+            string content = await response.Content.ReadAsStringAsync();
+            GitHubRunners responseObject = JsonSerializer.Deserialize<GitHubRunners>(content);
+            return responseObject;
+        }
+
+        Log.Error($"Unable to talk to GitHub. Check Token.");
+        return null;
+    }
+    public static async Task<string> GetRunnerTokenForOrg(string githubToken, string orgName)
     {
         
         // Register a runner with github
@@ -48,8 +73,30 @@ public static class GitHubApi {
 
         return null;
     }
+    public static async Task<string> GetRunnerTokenForRepo(string githubToken, string repoName)
+    {
+        
+        // Register a runner with github
+        using HttpClient client = new();
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+        client.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
+        client.DefaultRequestHeaders.Authorization = AuthenticationHeaderValue.Parse($"Bearer {githubToken}");
+        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("hetzner-autoscale", "1")); 
+            
+        HttpResponseMessage response = await client.PostAsync(
+            $"https://api.github.com/repos/{repoName}/actions/runners/registration-token", null);
 
-    public static async Task<bool> RemoveRunner(string orgName, string orgGitHubToken, long runnerToRemove)
+        if(response.IsSuccessStatusCode)
+        {
+            string content = await response.Content.ReadAsStringAsync();
+            GitHubResponse responseObject = JsonSerializer.Deserialize<GitHubResponse>(content);
+            return responseObject?.token;
+        }
+
+        return null;
+    }
+
+    public static async Task<bool> RemoveRunnerFromOrg(string orgName, string orgGitHubToken, long runnerToRemove)
     {
         // Register a runner with github
         using HttpClient client = new();
@@ -60,6 +107,20 @@ public static class GitHubApi {
 
         HttpResponseMessage response = await client.DeleteAsync(
             $"https://api.github.com/orgs/{orgName}/actions/runners/{runnerToRemove}");
+        return response.IsSuccessStatusCode;
+
+    }
+    public static async Task<bool> RemoveRunnerFromRepo(string repoName, string orgGitHubToken, long runnerToRemove)
+    {
+        // Register a runner with github
+        using HttpClient client = new();
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+        client.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
+        client.DefaultRequestHeaders.Authorization = AuthenticationHeaderValue.Parse($"Bearer {orgGitHubToken}");
+        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("hetzner-autoscale", "1"));
+
+        HttpResponseMessage response = await client.DeleteAsync(
+            $"https://api.github.com/repos/{repoName}/actions/runners/{runnerToRemove}");
         return response.IsSuccessStatusCode;
 
     }

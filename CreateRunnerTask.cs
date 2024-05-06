@@ -10,4 +10,6 @@ public record CreateRunnerTask
     public long ServerId { get; set; }
     public bool IsCustom { get; set; }
     public string ProfileName { get; set; }
+    public TargetType TargetType { get; set; }
+    public string RepoName { get; set; }
 }
