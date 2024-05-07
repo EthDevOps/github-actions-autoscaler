@@ -52,6 +52,8 @@ public class PoolManager : BackgroundService
 
             try
             {
+                // update the world state for htz
+                allHtzSrvs = await _cc.GetAllServers();
                 foreach (GithubTargetConfiguration tgt in targetConfig)
                 {
                     GithubRunnersGauge.Labels(tgt.Name, "active").Set(0);
@@ -95,6 +97,8 @@ public class PoolManager : BackgroundService
             if (DateTime.UtcNow - crudeTimer > TimeSpan.FromMinutes(cullMinutes))
             {
                 _logger.LogInformation("Cleaning runners...");
+                // update the world state for htz
+                allHtzSrvs = await _cc.GetAllServers();
                 await CleanUpRunners(targetConfig, allHtzSrvs);
                 await StartPoolRunners(targetConfig);
                 crudeTimer = DateTime.UtcNow;
@@ -205,6 +209,10 @@ public class PoolManager : BackgroundService
                 if (htzSrv != null && DateTime.UtcNow - htzSrv.Created.ToUniversalTime() < TimeSpan.FromMinutes(30))
                 {
                     // VM younger than 30min - not cleaning yet
+                    continue;
+                }
+                if (htzSrv == null)
+                {
                     continue;
                 }
                 
