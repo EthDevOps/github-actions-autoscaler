@@ -108,6 +108,57 @@ public class Program
 
         WebApplication app = builder.Build();
 
+        app.MapPost("/add-runner", async (HttpRequest request,
+            [FromServices] CloudController cloud, [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue runnerQueue,[FromServices] RunnerQueue poolMgr) =>
+        {
+            // Read webhook from github
+            JsonDocument json = await request.ReadFromJsonAsync<JsonDocument>();
+
+            string repoNameRequest = json.RootElement.GetProperty("repo").GetString();
+            string orgNameRequest = json.RootElement.GetProperty("org").GetString();
+            List<string> labels = json.RootElement.GetProperty("labels").EnumerateArray()
+                .Select(x => x.GetString()).ToList();
+
+            // Needed to get properly cased names
+            string orgName = Config.TargetConfigs.FirstOrDefault(x =>
+                x.Target == TargetType.Organization && x.Name.ToLower() == orgNameRequest.ToLower())?.Name ?? orgNameRequest;
+            string repoName = Config.TargetConfigs.FirstOrDefault(x =>
+                x.Target == TargetType.Repository && x.Name.ToLower() == repoNameRequest.ToLower())?.Name ?? repoNameRequest;
+            
+            
+            // Check if its an org or a repo
+            if (String.IsNullOrEmpty(orgName))
+            {
+                logger.LogWarning($"Unable to retrieve organization. aborting.");
+                return Results.StatusCode(400);
+            }
+
+            // Check if Org is configured
+            bool isOrg = Config.TargetConfigs.Any(x => x.Name == orgName && x.Target == TargetType.Organization);
+            bool isRepo = Config.TargetConfigs.Any(x => x.Name == repoName && x.Target == TargetType.Repository);
+            
+            if (!isOrg && !isRepo)
+            {
+                logger.LogWarning($"GitHub org {orgName} nor repo {repoName} is configured. Ignoring.");
+                return Results.StatusCode(400);
+            }
+
+            try
+            {
+                await JobQueued(logger, repoName, labels, orgName, poolMgr, isRepo ? TargetType.Repository : TargetType.Organization);
+            }
+            catch (Exception ex)
+            {
+                // This should make the webhook as bad and the timer will redeliver it after a while
+                Log.Error($"Failed to process manual trigger: {ex.Message}");
+                return Results.StatusCode(500);
+            }
+
+            // All was well 
+            return Results.StatusCode(201);
+            
+        });
+
         app.MapPost("/runner-state", async (HttpRequest request, 
             [FromServices] CloudController cloud, [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue runnerQueue, [FromQuery] string hostname, [FromQuery] string state) =>
         {
