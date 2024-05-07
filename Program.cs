@@ -108,9 +108,51 @@ public class Program
 
         WebApplication app = builder.Build();
 
+        app.MapPost("/runner-state", async (HttpRequest request, 
+            [FromServices] CloudController cloud, [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue runnerQueue, [FromQuery] string hostname, [FromQuery] string state) =>
+        {
+            switch (state)
+            {
+                case "ok":
+                    // Remove from provisioning dict
+                    Log.Information($"Runner {hostname} finished provisioning.");
+                    runnerQueue.CreatedRunners.Remove(hostname, out _);
+                    break;
+                case "error":
+                    Log.Warning($"Runner {hostname} failed provisioning.");
+                    if (request.Form.Files.Count > 0)
+                    {
+                        // Read the log file into a string
+                        using var reader = new StreamReader(request.Form.Files[0].OpenReadStream());
+                        string fileContent = await reader.ReadToEndAsync();
+                        Log.Information($"LOGS FROM {hostname}\n\n{fileContent}");    
+                    }
+                    
+                    // Get runner specs
+                    Machine runner = cloud.GetRunnerByHostname(hostname);
+                    
+                    // Queue creation of a new runner
+                    if (!runnerQueue.CreatedRunners.Remove(hostname, out CreateRunnerTask runnerSpec))
+                    {
+                       logger.LogError($"Unable to get previous settings for {hostname}");
+                    }
+                    
+                    logger.LogInformation($"Re-creating runner of type [{runnerSpec.Size}, {runnerSpec.Arch}] for {runnerSpec.RepoName}");
+                    runnerQueue.CreateTasks.Enqueue(runnerSpec);
+                    
+                    // Queue deletion of the failed runner
+                    runnerQueue.DeleteTasks.Enqueue(new DeleteRunnerTask
+                    {
+                        ServerId = runner.Id 
+                    });
+                    break;
+            }
+
+            return Results.StatusCode(201);
+        });
+        
         // Prepare pools
-        app.MapPost("/github-webhook", async (HttpRequest request, [FromServices] CloudController cloud,
-            [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue poolMgr) =>
+        app.MapPost("/github-webhook", async (HttpRequest request, [FromServices] CloudController cloud, [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue poolMgr) =>
         {
             // Verify webhook HMAC - TODO
 
@@ -317,6 +359,8 @@ public class Program
             return;
         }
 
+        
+        
         poolMgr.CreateTasks.Enqueue(new CreateRunnerTask
         {
             Arch = arch,

@@ -13,4 +13,6 @@ public class Machine
     public string TargetName { get; set; }
     public string Size { get; set; }
     public string Arch { get; set; }
+    public string Profile { get; set; }
+    public bool IsCustom { get; set; }
 }

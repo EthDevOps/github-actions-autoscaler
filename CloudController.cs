@@ -138,7 +138,9 @@ public class CloudController
             CreatedAt = DateTime.UtcNow,
             TargetName = targetName,
             Size = size,
-            Arch = arch
+            Arch = arch,
+            Profile = profileName,
+            IsCustom = isCustom
         });
         StoreActiveRunners();
         return newSrv.Name;
@@ -277,5 +279,10 @@ public class CloudController
     public List<Machine> GetRunnersForTarget(string orgName)
     {
         return _activeRunners.Where(x => x.TargetName == orgName).ToList();
+    }
+
+    public Machine GetRunnerByHostname(string hostname)
+    {
+        return _activeRunners.FirstOrDefault(x => x.Name == hostname);
     }
 }
