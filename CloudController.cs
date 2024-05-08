@@ -79,8 +79,9 @@ public class CloudController
         //string imageName = $"gh-actions-img-{arch}-{imageVersion}";
         string imageName = profile.IsCustomImage ? $"ghri-{profile.OsImageName}-{arch}" : profile.OsImageName;
         
-        
-        string name = $"ghr-{NameGenerator.Identifiers.Get(separator: "-")}".ToLower();
+       
+        // The naming generator might produce names with whitespace.
+        string name = $"ghr-{NameGenerator.Identifiers.Get(separator: "-")}".ToLower().Replace(' ','-');
         
         _logger.LogInformation($"Creating VM {name} from image {imageName} of size {size} for {targetName}");
 
