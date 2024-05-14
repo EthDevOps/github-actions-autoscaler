@@ -354,7 +354,15 @@ public class PoolManager : BackgroundService
             _logger.LogError(
                 $"Unable to delete runner [{rt.ServerId} | Retry: {rt.RetryCount}]: {ex.Message}");
             rt.RetryCount += 1;
-            _queues.DeleteTasks.Enqueue(rt);
+            if (rt.RetryCount < 10)
+            {
+                _queues.DeleteTasks.Enqueue(rt);
+            }
+            else
+            {
+                _logger.LogError($"Retries exceeded for {rt.ServerId}. Giving up.");
+            }
+
             return false;
         }
     }
@@ -378,7 +386,14 @@ public class PoolManager : BackgroundService
         {
             _logger.LogError($"Unable to create runner [{rt.Size} on {rt.Arch} | Retry: {rt.RetryCount}]: {ex.Message}");
             rt.RetryCount += 1;
-            _queues.CreateTasks.Enqueue(rt);
+            if (rt.RetryCount < 10)
+            {
+                _queues.CreateTasks.Enqueue(rt);
+            }
+            else
+            {
+                _logger.LogError($"Retries exceeded for {rt.Size} on {rt.Arch}. giving up.");
+            }
             return false;
         }
     }
