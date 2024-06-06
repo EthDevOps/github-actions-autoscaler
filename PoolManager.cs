@@ -163,6 +163,8 @@ public class PoolManager : BackgroundService
 
                 string arch = Program.Config.Sizes.FirstOrDefault(x => x.Name == pool.Size).Arch;
                 
+                _logger.LogInformation($"Checking pool {pool.Size} [{arch}]: Existing={existCt} Requested={pool.NumRunners} Missing={missingCt}");
+                
                 for (int i = 0; i < missingCt; i++)
                 {
                     // Queue VM creation
