@@ -286,4 +286,9 @@ public class CloudController
     {
         return _activeRunners.FirstOrDefault(x => x.Name == hostname);
     }
+
+    public List<Machine> GetAllRunners()
+    {
+        return _activeRunners.ToList();
+    }
 }

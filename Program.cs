@@ -159,6 +159,13 @@ public class Program
             
         });
 
+        app.MapGet("/debug", (HttpRequest request,
+            [FromServices] CloudController cloud, [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue runnerQueue) =>
+        {
+            return Results.Json(cloud.GetAllRunners());
+        });
+        
+        
         app.MapPost("/runner-state", async (HttpRequest request, 
             [FromServices] CloudController cloud, [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue runnerQueue, [FromQuery] string hostname, [FromQuery] string state) =>
         {
