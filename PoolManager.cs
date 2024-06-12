@@ -341,6 +341,9 @@ public class PoolManager : BackgroundService
             _logger.LogInformation($"Removing VM that is not in any GitHub registration: {htzSrv.Name} created at {htzSrv.Created:u}");
             await _cc.DeleteRunner(htzSrv.Id);
         }
+        
+        // Run a cloud controller sync
+        await _cc.SyncStoreAgainstHetzner();
 
     }
 

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using HetznerCloudApi;
@@ -16,7 +17,7 @@ public class CloudController
     private readonly string _persistentPath;
     private readonly HetznerCloudClient _client;
     private readonly ILogger _logger;
-    private List<Machine> _activeRunners = new();
+    private ConcurrentDictionary<long, Machine> _activeRunners = new();
     private static readonly Gauge ActiveMachinesCount = Metrics
         .CreateGauge("github_machines_active", "Number of active machines", labelNames: ["org","size"]);
 
@@ -131,7 +132,7 @@ public class CloudController
             .AppendLine("  - [ sh, -xc, 'bash /data/provision.sh']")
             .ToString();
         Server newSrv = await _client.Server.Create(eDataCenter.nbg1, imageId.Value, name, srvType.Value, userData: cloudInitcontent, sshKeysIds: srvKeys);
-        _activeRunners.Add(new Machine
+        _activeRunners.TryAdd(newSrv.Id, new Machine
         {
             Id = newSrv.Id,
             Name = newSrv.Name,
@@ -151,7 +152,7 @@ public class CloudController
     {
         try
         {
-            byte[] json = JsonSerializer.SerializeToUtf8Bytes(_activeRunners);
+            byte[] json = JsonSerializer.SerializeToUtf8Bytes(_activeRunners.Values.ToList());
             File.WriteAllBytes(_persistentPath, json);
         }
         catch (Exception ex)
@@ -159,7 +160,7 @@ public class CloudController
             _logger.LogError($"Unable to write to {_persistentPath}: {ex.Message}");
         }
         
-        var grouped = _activeRunners
+        var grouped = _activeRunners.Values
             .GroupBy(m => new { OrgName = m.TargetName, m.Size })
             .Select(g => new
             {
@@ -204,21 +205,15 @@ public class CloudController
                 return;
             }
 
-            _activeRunners = restoredRunners;
+            _activeRunners.Clear();
+            foreach (var m in restoredRunners)
+            {
+                _activeRunners.TryAdd(m.Id, m);
+            }
+            
             _logger.LogInformation($"Loaded {restoredRunners.Count} runners from store");
 
-            List<Server> htzServers = await _client.Server.Get();
-
-            // Check if known srv are still in hetzner
-            foreach (Machine knownSrv in _activeRunners.ToList())
-            {
-                if (htzServers.All(x => x.Name != knownSrv.Name))
-                {
-                    // Hetzner server no longer existing - remove from list
-                    _logger.LogWarning($"Cleaned {knownSrv.Name} from internal list");
-                    _activeRunners.Remove(knownSrv);
-                }
-            }
+            await SyncStoreAgainstHetzner();
         }
         catch (Exception ex)
         {
@@ -229,9 +224,25 @@ public class CloudController
 
     }
 
+    public async Task SyncStoreAgainstHetzner()
+    {
+        List<Server> htzServers = await _client.Server.Get();
+
+        // Check if known srv are still in hetzner
+        foreach (Machine knownSrv in _activeRunners.Values.ToList())
+        {
+            if (htzServers.All(x => x.Name != knownSrv.Name))
+            {
+                // Hetzner server no longer existing - remove from list
+                _logger.LogWarning($"Cleaned {knownSrv.Name} from internal list");
+                _activeRunners.TryRemove(knownSrv.Id, out _);
+            }
+        }
+    }
+
     public async Task DeleteRunner(long serverId)
     {
-        Machine srvMeta = _activeRunners.FirstOrDefault(x => x.Id == serverId);
+        _activeRunners.TryGetValue(serverId, out Machine srvMeta);
 
         if (srvMeta == null)
         {
@@ -244,21 +255,26 @@ public class CloudController
         await _client.Server.Delete(serverId);
        
         // Do some stats
-        Machine vmInfo = _activeRunners.FirstOrDefault(x => x.Id == serverId) ?? throw new InvalidOperationException();
+        try
+        {
+            _activeRunners.TryGetValue(serverId, out Machine vmInfo);
+            TimeSpan totalTime = DateTime.UtcNow - vmInfo.CreatedAt;
+            TimeSpan runTime = vmInfo.JobPickedUpAt > DateTime.MinValue ? DateTime.UtcNow - vmInfo.JobPickedUpAt : TimeSpan.Zero;
+            TimeSpan idleTime = vmInfo.JobPickedUpAt > DateTime.MinValue ? vmInfo.JobPickedUpAt - vmInfo.CreatedAt : DateTime.UtcNow - vmInfo.CreatedAt;
 
-        TimeSpan totalTime = DateTime.UtcNow - vmInfo.CreatedAt;
-        TimeSpan runTime = vmInfo.JobPickedUpAt > DateTime.MinValue ? DateTime.UtcNow - vmInfo.JobPickedUpAt : TimeSpan.Zero;
-        TimeSpan idleTime = vmInfo.JobPickedUpAt > DateTime.MinValue ? vmInfo.JobPickedUpAt - vmInfo.CreatedAt : DateTime.UtcNow - vmInfo.CreatedAt;
-        
-        _logger.LogInformation($"VM Stats for {vmInfo.Name} - Total: {totalTime:g} | Setup/Idle: {idleTime:g} | Run: {runTime:g}");
-        
-        _activeRunners.RemoveAll(x => x.Id == serverId);
+            _logger.LogInformation($"VM Stats for {vmInfo.Name} - Total: {totalTime:g} | Setup/Idle: {idleTime:g} | Run: {runTime:g}");
+        }
+        catch
+        {
+            _logger.LogWarning($"Unable to calculate stats for {serverId}");
+        }
+        _activeRunners.Remove(serverId, out _);
         StoreActiveRunners();
     }
 
     public void AddJobClaimToRunner(string vmId, long jobId, string jobUrl, string repoName)
     {
-        Machine vm = _activeRunners.FirstOrDefault(x => x.Name == vmId) ?? throw new InvalidOperationException();
+        Machine vm = _activeRunners.Values.FirstOrDefault(x => x.Name == vmId) ?? throw new InvalidOperationException();
         vm.JobId = jobId;
         vm.JobUrl = jobUrl;
         vm.RepoName = repoName;
@@ -268,7 +284,7 @@ public class CloudController
     
     public Machine GetInfoForJob(long jobId)
     {
-        return _activeRunners.FirstOrDefault(x => x.JobId == jobId) ?? null;
+        return _activeRunners.Values.FirstOrDefault(x => x.JobId == jobId) ?? null;
     }
 
     public async Task<List<Server>> GetAllServers()
@@ -279,16 +295,16 @@ public class CloudController
 
     public List<Machine> GetRunnersForTarget(string orgName)
     {
-        return _activeRunners.Where(x => x.TargetName == orgName).ToList();
+        return _activeRunners.Values.Where(x => x.TargetName == orgName).ToList();
     }
 
     public Machine GetRunnerByHostname(string hostname)
     {
-        return _activeRunners.FirstOrDefault(x => x.Name == hostname);
+        return _activeRunners.Values.FirstOrDefault(x => x.Name == hostname);
     }
 
     public List<Machine> GetAllRunners()
     {
-        return _activeRunners.ToList();
+        return _activeRunners.Values.ToList();
     }
 }
