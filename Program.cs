@@ -1,5 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using GithubActionsOrchestrator.GitHub;
+using GithubActionsOrchestrator.Models;
 using Microsoft.AspNetCore.Mvc;
 using Prometheus;
 using Serilog;
@@ -108,202 +110,197 @@ public class Program
 
         WebApplication app = builder.Build();
 
-        app.MapPost("/add-runner", async (HttpRequest request,
-            [FromServices] CloudController cloud, [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue runnerQueue,[FromServices] RunnerQueue poolMgr) =>
-        {
-            // Read webhook from github
-            JsonDocument json = await request.ReadFromJsonAsync<JsonDocument>();
-
-            string repoNameRequest = json.RootElement.GetProperty("repo").GetString();
-            string orgNameRequest = json.RootElement.GetProperty("org").GetString();
-            List<string> labels = json.RootElement.GetProperty("labels").EnumerateArray()
-                .Select(x => x.GetString()).ToList();
-
-            // Needed to get properly cased names
-            string orgName = Config.TargetConfigs.FirstOrDefault(x =>
-                x.Target == TargetType.Organization && x.Name.ToLower() == orgNameRequest.ToLower())?.Name ?? orgNameRequest;
-            string repoName = Config.TargetConfigs.FirstOrDefault(x =>
-                x.Target == TargetType.Repository && x.Name.ToLower() == repoNameRequest.ToLower())?.Name ?? repoNameRequest;
-            
-            
-            // Check if its an org or a repo
-            if (String.IsNullOrEmpty(orgName))
-            {
-                logger.LogWarning($"Unable to retrieve organization. aborting.");
-                return Results.StatusCode(400);
-            }
-
-            // Check if Org is configured
-            bool isOrg = Config.TargetConfigs.Any(x => x.Name == orgName && x.Target == TargetType.Organization);
-            bool isRepo = Config.TargetConfigs.Any(x => x.Name == repoName && x.Target == TargetType.Repository);
-            
-            if (!isOrg && !isRepo)
-            {
-                logger.LogWarning($"GitHub org {orgName} nor repo {repoName} is configured. Ignoring.");
-                return Results.StatusCode(400);
-            }
-
-            try
-            {
-                await JobQueued(logger, repoName, labels, orgName, poolMgr, isRepo ? TargetType.Repository : TargetType.Organization);
-            }
-            catch (Exception ex)
-            {
-                // This should make the webhook as bad and the timer will redeliver it after a while
-                Log.Error($"Failed to process manual trigger: {ex.Message}");
-                return Results.StatusCode(500);
-            }
-
-            // All was well 
-            return Results.StatusCode(201);
-            
-        });
-
-        app.MapGet("/debug", (HttpRequest request,
-            [FromServices] CloudController cloud, [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue runnerQueue) =>
-        {
-            return Results.Json(cloud.GetAllRunners());
-        });
+        app.MapPost("/add-runner", AddRunnerHandler);
+        app.MapGet("/debug", DebugHandler);
+        app.MapPost("/runner-state", RunnerStateReportHandler);
+        app.MapPost("/github-webhook", GithubWebhookHandler);
         
-        
-        app.MapPost("/runner-state", async (HttpRequest request, 
-            [FromServices] CloudController cloud, [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue runnerQueue, [FromQuery] string hostname, [FromQuery] string state) =>
-        {
-            switch (state)
-            {
-                case "ok":
-                    // Remove from provisioning dict
-                    Log.Information($"Runner {hostname} finished provisioning.");
-                    runnerQueue.CreatedRunners.Remove(hostname, out _);
-                    break;
-                case "error":
-                    Log.Warning($"Runner {hostname} failed provisioning.");
-                    if (request.Form.Files.Count > 0)
-                    {
-                        // Read the log file into a string
-                        using var reader = new StreamReader(request.Form.Files[0].OpenReadStream());
-                        string fileContent = await reader.ReadToEndAsync();
-                        Log.Information($"LOGS FROM {hostname}\n\n{fileContent}");    
-                    }
-                    
-                    // Get runner specs
-                    Machine runner = cloud.GetRunnerByHostname(hostname);
-                    
-                    // Queue creation of a new runner
-                    if (!runnerQueue.CreatedRunners.Remove(hostname, out CreateRunnerTask runnerSpec))
-                    {
-                       logger.LogError($"Unable to get previous settings for {hostname}");
-                    }
-                    
-                    logger.LogInformation($"Re-creating runner of type [{runnerSpec.Size}, {runnerSpec.Arch}] for {runnerSpec.RepoName}");
-                    runnerQueue.CreateTasks.Enqueue(runnerSpec);
-                    
-                    // Queue deletion of the failed runner
-                    runnerQueue.DeleteTasks.Enqueue(new DeleteRunnerTask
-                    {
-                        ServerId = runner.Id 
-                    });
-                    break;
-            }
-
-            return Results.StatusCode(201);
-        });
-        
-        // Prepare pools
-        app.MapPost("/github-webhook", async (HttpRequest request, [FromServices] CloudController cloud, [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue poolMgr) =>
-        {
-            // Verify webhook HMAC - TODO
-
-            // Read webhook from github
-            JsonDocument json = await request.ReadFromJsonAsync<JsonDocument>();
-
-            string action;
-            if (json.RootElement.TryGetProperty("action", out JsonElement actionJson))
-            {
-                action = actionJson.GetString() ?? string.Empty;
-            }
-            else
-            {
-                logger.LogDebug("No Action found. rejecting.");
-                return Results.StatusCode(201);
-            }
-
-            if (!json.RootElement.TryGetProperty("workflow_job", out JsonElement workflowJson))
-            {
-                logger.LogDebug("Received a non-workflowJob request. Ignoring.");
-                return Results.StatusCode(201);
-            }
-
-            List<string> labels = workflowJson.GetProperty("labels").EnumerateArray()
-                .Select(x => x.GetString()).ToList();
-
-            bool isSelfHosted = labels.Any(x => x.StartsWith("self-hosted-ghr"));
-
-            if (!isSelfHosted)
-            {
-                logger.LogDebug($"Received a non self-hosted request. Ignoring. Labels: {string.Join('|', labels)}");
-                return Results.StatusCode(201);
-            }
-
-            long jobId = workflowJson.GetProperty("id").GetInt64();
-            string repoNameRequest = json.RootElement.GetProperty("repository").GetProperty("full_name").GetString();
-            string orgNameRequest = json.RootElement.GetProperty("organization").GetProperty("login").GetString();
-
-            // Needed to get properly cased names
-            string orgName = Config.TargetConfigs.FirstOrDefault(x =>
-                x.Target == TargetType.Organization && x.Name.ToLower() == orgNameRequest.ToLower())?.Name ?? orgNameRequest;
-            string repoName = Config.TargetConfigs.FirstOrDefault(x =>
-                x.Target == TargetType.Repository && x.Name.ToLower() == repoNameRequest.ToLower())?.Name ?? repoNameRequest;
-            
-            
-            // Check if its an org or a repo
-            if (String.IsNullOrEmpty(orgName))
-            {
-                logger.LogWarning($"Unable to retrieve organization. aborting.");
-                return Results.StatusCode(201);
-            }
-
-            // Check if Org is configured
-            bool isOrg = Config.TargetConfigs.Any(x => x.Name == orgName && x.Target == TargetType.Organization);
-            bool isRepo = Config.TargetConfigs.Any(x => x.Name == repoName && x.Target == TargetType.Repository);
-            
-            if (!isOrg && !isRepo)
-            {
-                logger.LogWarning($"GitHub org {orgName} nor repo {repoName} is configured. Ignoring.");
-                return Results.StatusCode(201);
-            }
-
-            try
-            {
-                switch (action)
-                {
-                    case "queued":
-                        await JobQueued(logger, repoName, labels, orgName, poolMgr, isRepo ? TargetType.Repository : TargetType.Organization);
-                        break;
-                    case "in_progress":
-                        JobInProgress(workflowJson, logger, jobId, cloud, repoName, orgName);
-                        break;
-                    case "completed":
-                        JobCompleted(logger, jobId, cloud, poolMgr, repoName);
-                        break;
-                    default:
-                        logger.LogWarning("Unknown action. Ignoring");
-                        break;
-                }
-            }
-            catch (Exception ex)
-            {
-                // This should make the webhook as bad and the timer will redeliver it after a while
-                Log.Error($"Failed to process {action} webhook: {ex.Message}");
-                return Results.StatusCode(500);
-            }
-            
-            // All was well 
-            return Results.StatusCode(201);
-        });
-        
-
         app.Run();
+    }
+
+    private static async Task<IResult> GithubWebhookHandler(HttpRequest request, [FromServices] CloudController cloud, [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue poolMgr)
+    {
+        // Verify webhook HMAC - TODO
+
+        // Read webhook from github
+        JsonDocument json = await request.ReadFromJsonAsync<JsonDocument>();
+
+        string action;
+        if (json.RootElement.TryGetProperty("action", out JsonElement actionJson))
+        {
+            action = actionJson.GetString() ?? string.Empty;
+        }
+        else
+        {
+            logger.LogDebug("No Action found. rejecting.");
+            return Results.StatusCode(201);
+        }
+
+        if (!json.RootElement.TryGetProperty("workflow_job", out JsonElement workflowJson))
+        {
+            logger.LogDebug("Received a non-workflowJob request. Ignoring.");
+            return Results.StatusCode(201);
+        }
+
+        List<string> labels = workflowJson.GetProperty("labels")
+            .EnumerateArray()
+            .Select(x => x.GetString())
+            .ToList();
+
+        bool isSelfHosted = labels.Any(x => x.StartsWith("self-hosted-ghr"));
+
+        if (!isSelfHosted)
+        {
+            //logger.LogDebug($"Received a non self-hosted request. Ignoring. Labels: {string.Join('|', labels)}");
+            return Results.StatusCode(201);
+        }
+
+        long jobId = workflowJson.GetProperty("id").GetInt64();
+        string repoNameRequest = json.RootElement.GetProperty("repository").GetProperty("full_name").GetString();
+        string orgNameRequest = json.RootElement.GetProperty("organization").GetProperty("login").GetString();
+
+        // Needed to get properly cased names
+        string orgName = Config.TargetConfigs.FirstOrDefault(x => x.Target == TargetType.Organization && x.Name.ToLower() == orgNameRequest.ToLower())?.Name ?? orgNameRequest;
+        string repoName = Config.TargetConfigs.FirstOrDefault(x => x.Target == TargetType.Repository && x.Name.ToLower() == repoNameRequest.ToLower())?.Name ?? repoNameRequest;
+
+
+        // Check if its an org or a repo
+        if (String.IsNullOrEmpty(orgName))
+        {
+            logger.LogWarning($"Unable to retrieve organization. aborting.");
+            return Results.StatusCode(201);
+        }
+
+        // Check if Org is configured
+        bool isOrg = Config.TargetConfigs.Any(x => x.Name == orgName && x.Target == TargetType.Organization);
+        bool isRepo = Config.TargetConfigs.Any(x => x.Name == repoName && x.Target == TargetType.Repository);
+
+        if (!isOrg && !isRepo)
+        {
+            logger.LogWarning($"GitHub org {orgName} nor repo {repoName} is configured. Ignoring.");
+            return Results.StatusCode(201);
+        }
+
+        try
+        {
+            switch (action)
+            {
+                case "queued":
+                    await JobQueued(logger, repoName, labels, orgName, poolMgr, isRepo ? TargetType.Repository : TargetType.Organization);
+                    break;
+                case "in_progress":
+                    JobInProgress(workflowJson, logger, jobId, cloud, repoName, orgName);
+                    break;
+                case "completed":
+                    JobCompleted(logger, jobId, cloud, poolMgr, repoName);
+                    break;
+                default:
+                    logger.LogWarning("Unknown action. Ignoring");
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            // This should make the webhook as bad and the timer will redeliver it after a while
+            Log.Error($"Failed to process {action} webhook: {ex.Message}");
+            return Results.StatusCode(500);
+        }
+
+        // All was well 
+        return Results.StatusCode(201);
+    }
+
+    private static async Task<IResult> RunnerStateReportHandler(HttpRequest request, [FromServices] CloudController cloud, [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue runnerQueue, [FromQuery] string hostname, [FromQuery] string state)
+    {
+        switch (state)
+        {
+            case "ok":
+                // Remove from provisioning dict
+                Log.Information($"Runner {hostname} finished provisioning.");
+                runnerQueue.CreatedRunners.Remove(hostname, out _);
+                break;
+            case "error":
+                Log.Warning($"Runner {hostname} failed provisioning.");
+                if (request.Form.Files.Count > 0)
+                {
+                    // Read the log file into a string
+                    using var reader = new StreamReader(request.Form.Files[0].OpenReadStream());
+                    string fileContent = await reader.ReadToEndAsync();
+                    Log.Information($"LOGS FROM {hostname}\n\n{fileContent}");
+                }
+
+                // Get runner specs
+                Machine runner = cloud.GetRunnerByHostname(hostname);
+
+                // Queue creation of a new runner
+                if (!runnerQueue.CreatedRunners.Remove(hostname, out CreateRunnerTask runnerSpec))
+                {
+                    logger.LogError($"Unable to get previous settings for {hostname}");
+                }
+
+                logger.LogInformation($"Re-creating runner of type [{runnerSpec.Size}, {runnerSpec.Arch}] for {runnerSpec.RepoName}");
+                runnerQueue.CreateTasks.Enqueue(runnerSpec);
+
+                // Queue deletion of the failed runner
+                runnerQueue.DeleteTasks.Enqueue(new DeleteRunnerTask { ServerId = runner.Id });
+                break;
+        }
+
+        return Results.StatusCode(201);
+    }
+
+    private static IResult DebugHandler(HttpRequest request, [FromServices] CloudController cloud, [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue runnerQueue)
+    {
+        return Results.Json(cloud.GetAllRunners());
+    }
+
+    private static async Task<IResult> AddRunnerHandler(HttpRequest request, [FromServices] CloudController cloud, [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue runnerQueue, [FromServices] RunnerQueue poolMgr)
+    {
+        // Read webhook from github
+        JsonDocument json = await request.ReadFromJsonAsync<JsonDocument>();
+
+        string repoNameRequest = json.RootElement.GetProperty("repo").GetString();
+        string orgNameRequest = json.RootElement.GetProperty("org").GetString();
+        List<string> labels = json.RootElement.GetProperty("labels")
+            .EnumerateArray()
+            .Select(x => x.GetString())
+            .ToList();
+
+        // Needed to get properly cased names
+        string orgName = Config.TargetConfigs.FirstOrDefault(x => x.Target == TargetType.Organization && x.Name.ToLower() == orgNameRequest.ToLower())?.Name ?? orgNameRequest;
+        string repoName = Config.TargetConfigs.FirstOrDefault(x => x.Target == TargetType.Repository && x.Name.ToLower() == repoNameRequest.ToLower())?.Name ?? repoNameRequest;
+
+
+        // Check if its an org or a repo
+        if (String.IsNullOrEmpty(orgName))
+        {
+            logger.LogWarning($"Unable to retrieve organization. aborting.");
+            return Results.StatusCode(400);
+        }
+
+        // Check if Org is configured
+        bool isOrg = Config.TargetConfigs.Any(x => x.Name == orgName && x.Target == TargetType.Organization);
+        bool isRepo = Config.TargetConfigs.Any(x => x.Name == repoName && x.Target == TargetType.Repository);
+
+        if (!isOrg && !isRepo)
+        {
+            logger.LogWarning($"GitHub org {orgName} nor repo {repoName} is configured. Ignoring.");
+            return Results.StatusCode(400);
+        }
+
+        try
+        {
+            await JobQueued(logger, repoName, labels, orgName, poolMgr, isRepo ? TargetType.Repository : TargetType.Organization);
+        }
+        catch (Exception ex)
+        {
+            // This should make the webhook as bad and the timer will redeliver it after a while
+            Log.Error($"Failed to process manual trigger: {ex.Message}");
+            return Results.StatusCode(500);
+        }
+
+        // All was well 
+        return Results.StatusCode(201);
     }
 
     private static void JobCompleted(ILogger<Program> logger, long jobId, CloudController cloud, RunnerQueue poolMgr, string repoName)

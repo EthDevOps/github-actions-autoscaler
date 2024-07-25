@@ -1,6 +1,6 @@
 using System.Text.Json.Serialization;
 
-namespace GithubActionsOrchestrator;
+namespace GithubActionsOrchestrator.GitHub;
 
 public class GitHubRunnerLabel
 {

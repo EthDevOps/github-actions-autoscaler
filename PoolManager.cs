@@ -1,3 +1,5 @@
+using GithubActionsOrchestrator.GitHub;
+using GithubActionsOrchestrator.Models;
 using HetznerCloudApi.Object.Server;
 using Prometheus;
 
@@ -43,53 +45,19 @@ public class PoolManager : BackgroundService
         await Task.Yield();
        
         DateTime crudeTimer = DateTime.UtcNow;
+        DateTime crudeStatsTimer = DateTime.UtcNow;
         int cullMinutes = 10;
+        int statsSeconds = 10;
         
         while (!stoppingToken.IsCancellationRequested)
         {
             // Grab some stats
             QueueSize.Set(_queues.CreateTasks.Count + _queues.DeleteTasks.Count);
 
-            try
+            if (DateTime.UtcNow - crudeStatsTimer > TimeSpan.FromSeconds(statsSeconds))
             {
-                // update the world state for htz
-                allHtzSrvs = await _cc.GetAllServers();
-                foreach (GithubTargetConfiguration tgt in targetConfig)
-                {
-                    GithubRunnersGauge.Labels(tgt.Name, "active").Set(0);
-                    GithubRunnersGauge.Labels(tgt.Name, "idle").Set(0);
-                    GithubRunnersGauge.Labels(tgt.Name, "offline").Set(0);
-                    GitHubRunners orgRunners = tgt.Target switch
-                    {
-                        TargetType.Repository => await GitHubApi.GetRunnersForRepo(tgt.GitHubToken, tgt.Name),
-                        TargetType.Organization => await GitHubApi.GetRunnersForOrg(tgt.GitHubToken, tgt.Name),
-                        _ => throw new ArgumentOutOfRangeException()
-                    };
-                    
-                    var ghStatus = orgRunners.Runners.Where(x => x.Name.StartsWith("ghr")).GroupBy(x =>
-                    {
-                        if (x.Busy)
-                        {
-                            return "active";
-                        }
-
-                        if (x.Status == "online")
-                        {
-                            return "idle";
-                        }
-
-                        return x.Status;
-                    }).Select(x => new { Status = x.Key, Count = x.Count() });
-                    foreach (var ghs in ghStatus)
-                    {
-                        GithubRunnersGauge.Labels(tgt.Name, ghs.Status).Set(ghs.Count);
-                    }
-
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError($"Unable to get stats: {ex.Message}");
+                await ProcessStats(targetConfig);
+                crudeStatsTimer = DateTime.UtcNow;
             }
 
 
@@ -131,13 +99,56 @@ public class PoolManager : BackgroundService
                     if (!success)
                     {
                         // Creation didn't succeed. Let's hold of creating new runners for a minute
-                        _logger.LogWarning("Encountered a problem creating runners. Will hold queue processing for 10 seconds.");
+                        _logger.LogWarning($"Encountered a problem creating runner for {task.RepoName}. Will hold queue processing for 10 seconds.");
                         await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
                     }
                 }
             }
 
             await Task.Delay(250, stoppingToken);
+        }
+    }
+
+    private async Task ProcessStats(List<GithubTargetConfiguration> targetConfig)
+    {
+        try
+        {
+            foreach (GithubTargetConfiguration tgt in targetConfig)
+            {
+                GithubRunnersGauge.Labels(tgt.Name, "active").Set(0);
+                GithubRunnersGauge.Labels(tgt.Name, "idle").Set(0);
+                GithubRunnersGauge.Labels(tgt.Name, "offline").Set(0);
+                GitHubRunners orgRunners = tgt.Target switch
+                {
+                    TargetType.Repository => await GitHubApi.GetRunnersForRepo(tgt.GitHubToken, tgt.Name),
+                    TargetType.Organization => await GitHubApi.GetRunnersForOrg(tgt.GitHubToken, tgt.Name),
+                    _ => throw new ArgumentOutOfRangeException()
+                };
+
+                var ghStatus = orgRunners.Runners.Where(x => x.Name.StartsWith("ghr")).GroupBy(x =>
+                {
+                    if (x.Busy)
+                    {
+                        return "active";
+                    }
+
+                    if (x.Status == "online")
+                    {
+                        return "idle";
+                    }
+
+                    return x.Status;
+                }).Select(x => new { Status = x.Key, Count = x.Count() });
+                foreach (var ghs in ghStatus)
+                {
+                    GithubRunnersGauge.Labels(tgt.Name, ghs.Status).Set(ghs.Count);
+                }
+
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError($"Unable to get stats: {ex.Message}");
         }
     }
 

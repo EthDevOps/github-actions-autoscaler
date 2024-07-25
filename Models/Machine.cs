@@ -1,4 +1,4 @@
-namespace GithubActionsOrchestrator;
+namespace GithubActionsOrchestrator.Models;
 
 public class Machine
 {

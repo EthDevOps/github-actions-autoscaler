@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 
-namespace GithubActionsOrchestrator;
+namespace GithubActionsOrchestrator.Models;
 
 public class RunnerQueue
 {

@@ -1,4 +1,6 @@
-namespace GithubActionsOrchestrator;
+using GithubActionsOrchestrator.GitHub;
+
+namespace GithubActionsOrchestrator.Models;
 
 public record CreateRunnerTask
 {

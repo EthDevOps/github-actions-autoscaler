@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using System.Text.Json;
+using GithubActionsOrchestrator.GitHub;
 using Serilog;
 using Serilog.Core;
 

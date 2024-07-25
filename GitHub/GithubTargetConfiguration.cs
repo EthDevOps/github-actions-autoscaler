@@ -1,4 +1,6 @@
-namespace GithubActionsOrchestrator;
+using GithubActionsOrchestrator.Models;
+
+namespace GithubActionsOrchestrator.GitHub;
 
 public class GithubTargetConfiguration
 {
@@ -7,10 +9,4 @@ public class GithubTargetConfiguration
     public List<Pool> Pools { get; set; }
     
     public TargetType Target { get; set; }
-}
-
-public enum TargetType
-{
-    Repository = 0,
-    Organization = 1
 }
