@@ -89,6 +89,15 @@ public class Program
             }
         }
 
+        // Database migration
+        Log.Information("Running Database migrations...");
+        using (var db = new ActionsRunnerContext())
+        {
+            db.Database.Migrate();
+        }
+        Log.Information("Migrations complete.");
+
+
         WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
         builder.Services.AddSerilog();
         builder.Services.AddSingleton<RunnerQueue>();
