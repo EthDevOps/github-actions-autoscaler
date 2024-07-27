@@ -244,7 +244,13 @@ public class PoolManager : BackgroundService
                 var runner = await db.Runners.Include(x => x.Lifecycle).FirstOrDefaultAsync(x => x.Hostname == runnerToRemove.Name);
                 if (runner == null)
                 {
-                    _logger.LogWarning($"Found offline runner on GitHub not on record: {runnerToRemove.Name}");
+                    _logger.LogWarning($"Found offline runner on GitHub not on record: {runnerToRemove.Name} - Removing");
+                    bool f = githubTarget.Target switch
+                    {
+                        TargetType.Organization => await GitHubApi.RemoveRunnerFromOrg(githubTarget.Name, githubTarget.GitHubToken, runnerToRemove.Id),
+                        TargetType.Repository => await GitHubApi.RemoveRunnerFromRepo(githubTarget.Name, githubTarget.GitHubToken, runnerToRemove.Id),
+                        _ => throw new ArgumentOutOfRangeException()
+                    };
                     continue;
                 }
 
