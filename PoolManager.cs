@@ -1,6 +1,8 @@
+using GithubActionsOrchestrator.Database;
 using GithubActionsOrchestrator.GitHub;
 using GithubActionsOrchestrator.Models;
 using HetznerCloudApi.Object.Server;
+using Microsoft.EntityFrameworkCore;
 using Prometheus;
 
 namespace GithubActionsOrchestrator;
@@ -35,9 +37,9 @@ public class PoolManager : BackgroundService
         List<GithubTargetConfiguration> targetConfig = Program.Config.TargetConfigs;
         
         // Cull runners
-        List<Server> allHtzSrvs = await _cc.GetAllServers();
+        List<Server> allHtzSrvs = await _cc.GetAllServersFromCsp();
 
-        await CleanUpRunners(targetConfig, allHtzSrvs);
+        await CleanUpRunners(targetConfig);
         await StartPoolRunners(targetConfig);
         _logger.LogInformation("Poolmanager init done.");
 
@@ -46,7 +48,7 @@ public class PoolManager : BackgroundService
        
         DateTime crudeTimer = DateTime.UtcNow;
         DateTime crudeStatsTimer = DateTime.UtcNow;
-        int cullMinutes = 10;
+        int cullMinutes = 3;
         int statsSeconds = 10;
         
         while (!stoppingToken.IsCancellationRequested)
@@ -66,8 +68,8 @@ public class PoolManager : BackgroundService
             {
                 _logger.LogInformation("Cleaning runners...");
                 // update the world state for htz
-                allHtzSrvs = await _cc.GetAllServers();
-                await CleanUpRunners(targetConfig, allHtzSrvs);
+                allHtzSrvs = await _cc.GetAllServersFromCsp();
+                await CleanUpRunners(targetConfig);
                 await StartPoolRunners(targetConfig);
                 crudeTimer = DateTime.UtcNow;
             }
@@ -125,7 +127,7 @@ public class PoolManager : BackgroundService
                     _ => throw new ArgumentOutOfRangeException()
                 };
 
-                var ghStatus = orgRunners.Runners.Where(x => x.Name.StartsWith("ghr")).GroupBy(x =>
+                var ghStatus = orgRunners.Runners.Where(x => x.Name.StartsWith(Program.Config.RunnerPrefix)).GroupBy(x =>
                 {
                     if (x.Busy)
                     {
@@ -155,51 +157,74 @@ public class PoolManager : BackgroundService
     private async Task StartPoolRunners(List<GithubTargetConfiguration> targetConfig)
     {
         // Start pool runners
-        foreach (GithubTargetConfiguration tgt in targetConfig)
+        var db = new ActionsRunnerContext();
+        foreach (GithubTargetConfiguration owner in targetConfig)
         {
-            _logger.LogInformation($"Checking pool runners for {tgt.Name}");
-            string runnerToken = tgt.Target switch
+            _logger.LogInformation($"Checking pool runners for {owner.Name}");
+            string runnerToken = owner.Target switch
             {
-                TargetType.Repository => await GitHubApi.GetRunnerTokenForRepo(tgt.GitHubToken, tgt.Name),
-                TargetType.Organization => await GitHubApi.GetRunnerTokenForOrg(tgt.GitHubToken, tgt.Name),
+                TargetType.Repository => await GitHubApi.GetRunnerTokenForRepo(owner.GitHubToken, owner.Name),
+                TargetType.Organization => await GitHubApi.GetRunnerTokenForOrg(owner.GitHubToken, owner.Name),
                 _ => throw new ArgumentOutOfRangeException()
             };
                 
-            List<Machine> existingRunners = _cc.GetRunnersForTarget(tgt.Name);
+            List<Runner> existingRunners = await db.Runners.Where(x => x.Owner == owner.Name && x.IsOnline).ToListAsync();
             
-            foreach (Pool pool in tgt.Pools)
+            foreach (Pool pool in owner.Pools)
             {
                 int existCt = existingRunners.Count(x => x.Size == pool.Size);
                 int missingCt = pool.NumRunners - existCt;
 
-                string arch = Program.Config.Sizes.FirstOrDefault(x => x.Name == pool.Size).Arch;
+                string arch = Program.Config.Sizes.FirstOrDefault(x => x.Name == pool.Size)?.Arch;
                 
                 _logger.LogInformation($"Checking pool {pool.Size} [{arch}]: Existing={existCt} Requested={pool.NumRunners} Missing={missingCt}");
                 
                 for (int i = 0; i < missingCt; i++)
                 {
                     // Queue VM creation
+                    var profile = pool.Profile ?? "default";
+                    Runner newRunner = new()
+                    {
+                        Size = pool.Size,
+                        Cloud = "htz",
+                        Hostname = "Unknown",
+                        Profile = profile,
+                        Lifecycle =
+                        [
+                            new RunnerLifecycle
+                            {
+                                EventTimeUtc = DateTime.UtcNow,
+                                Status = RunnerStatus.CreationQueued,
+                                Event = "Created as pool runner"
+                            }
+                        ],
+                        IsOnline = false,
+                        Arch = arch,
+                        IPv4 = string.Empty,
+                        IsCustom = profile != "default",
+                        Owner = owner.Name
+                    };
+                    await db.Runners.AddAsync(newRunner);
+                    await db.SaveChangesAsync();
+                    
                     _queues.CreateTasks.Enqueue(new CreateRunnerTask
                     {
-                        Arch = arch,
-                        Size = pool.Size,
                         RunnerToken = runnerToken,
-                        OrgName = tgt.Name,
-                        RepoName = tgt.Name,
-                        TargetType = tgt.Target,
-                        IsCustom = pool.Profile != "default",
-                        ProfileName = pool.Profile
+                        RepoName = owner.Name,
+                        TargetType = owner.Target,
+                        RunnerDbId = newRunner.RunnerId,
                         
                     }); 
-                    _logger.LogInformation($"[{i+1}/{missingCt}] Queued {pool.Size} runner for {tgt.Name}");
+                    _logger.LogInformation($"[{i+1}/{missingCt}] Queued {pool.Size} runner for {owner.Name}");
                 }
             }
         }
     }
 
-    private async Task CleanUpRunners(List<GithubTargetConfiguration> targetConfigs, List<Server> allHtzSrvs)
+    private async Task CleanUpRunners(List<GithubTargetConfiguration> targetConfigs)
     {
         List<string> registeredServerNames = new();
+        var db = new ActionsRunnerContext();
         foreach (GithubTargetConfiguration githubTarget in targetConfigs)
         {
             _logger.LogInformation($"Cleaning runners for {githubTarget.Name}...");
@@ -213,22 +238,30 @@ public class PoolManager : BackgroundService
             };
 
             // Remove all offline runner entries from GitHub
-            List<GitHubRunner> ghOfflineRunners = githubRunners.Runners.Where(x => x.Name.StartsWith("ghr") && x.Status == "offline").ToList();
-            List<GitHubRunner> ghIdleRunners = githubRunners.Runners.Where(x => x.Name.StartsWith("ghr") && x is { Status: "online", Busy: false }).ToList();
-
+            List<GitHubRunner> ghOfflineRunners = githubRunners.Runners.Where(x => x.Name.StartsWith(Program.Config.RunnerPrefix) && x.Status == "offline").ToList();
             foreach (GitHubRunner runnerToRemove in ghOfflineRunners)
             {
-                Server htzSrv = allHtzSrvs.FirstOrDefault(x => x.Name == runnerToRemove.Name);
-                if (htzSrv != null && DateTime.UtcNow - htzSrv.Created.ToUniversalTime() < TimeSpan.FromMinutes(30))
+                var runner = await db.Runners.Include(x => x.Lifecycle).FirstOrDefaultAsync(x => x.Hostname == runnerToRemove.Name);
+                if (runner == null)
+                {
+                    _logger.LogWarning($"Found offline runner on GitHub not on record: {runnerToRemove.Name}");
+                    continue;
+                }
+
+                if (DateTime.UtcNow - runner.CreateTime < TimeSpan.FromMinutes(30))
                 {
                     // VM younger than 30min - not cleaning yet
                     continue;
                 }
-                if (htzSrv == null)
+
+                runner.IsOnline = false;
+                runner.Lifecycle.Add(new()
                 {
-                    continue;
-                }
-                
+                    Status = RunnerStatus.Cleanup,
+                    EventTimeUtc = DateTime.UtcNow,
+                    Event = $"[GitHub] Removing offline runner {runnerToRemove.Name} from org {githubTarget.Name}"
+                });
+                await db.SaveChangesAsync();
                 _logger.LogInformation($"Removing offline runner {runnerToRemove.Name} from org {githubTarget.Name}");
                 bool _ = githubTarget.Target switch
                 {
@@ -239,88 +272,45 @@ public class PoolManager : BackgroundService
 
             }
            
-            // Check how many base runners should be around and idle
-            foreach (MachineSize size in Program.Config.Sizes)
+            // remove any long idling runners. pool manager will start fresh ones eventually if needed. Keeps em fresh.
+            List<GitHubRunner> ghIdleRunners = githubRunners.Runners.Where(x => x.Name.StartsWith(Program.Config.RunnerPrefix) && x is { Status: "online", Busy: false }).ToList();
+            foreach (GitHubRunner ghIdleRunner in ghIdleRunners)
             {
-                List<GitHubRunner> idlePoolRunner = ghIdleRunners.Where(x => x.Labels.Any(y => y.Name == size.Name)).ToList();
-                if (githubTarget.Pools.All(x => x.Size != size.Name))
+                var runner = await db.Runners.Include(x => x.Lifecycle).FirstOrDefaultAsync(x => x.Hostname == ghIdleRunner.Name);
+                if (runner == null)
                 {
-                    // Non of this size exists in pool. Remove all 
-                    foreach (GitHubRunner r in idlePoolRunner)
-                    { 
-                        Server htzSrv = allHtzSrvs.FirstOrDefault(x => x.Name == r.Name);
-                        if (htzSrv != null && DateTime.Now - htzSrv.Created < TimeSpan.FromMinutes(15))
-                        {
-                            // Don't clean a recently created runner. there might be a job waiting for pickup
-                            continue;
-                        }
-                        
-                        _logger.LogInformation($"Removing excess runner {r.Name} from {githubTarget.Name}");
-                        bool _ = githubTarget.Target switch
-                        {
-                            TargetType.Organization => await GitHubApi.RemoveRunnerFromOrg(githubTarget.Name, githubTarget.GitHubToken, r.Id),
-                            TargetType.Repository => await GitHubApi.RemoveRunnerFromRepo(githubTarget.Name, githubTarget.GitHubToken, r.Id),
-                            _ => throw new ArgumentOutOfRangeException()
-                        };
-                        
-                        long? htzSrvId = htzSrv?.Id;
-                        if (htzSrvId.HasValue)
-                        {
-                            await _cc.DeleteRunner(htzSrvId.Value);
-                        }
-                    }
+                    _logger.LogWarning($"Found idle runner on GitHub not on record: {ghIdleRunner.Name}");
+                    continue;
                 }
+
+                if (DateTime.UtcNow - runner.CreateTime < TimeSpan.FromHours(6))
+                {
+                    // VM younger than 6h - not cleaning yet
+                    continue;
+                }
+                
+                // Delete before writing to db.
+                bool _ = githubTarget.Target switch
+                {
+                    TargetType.Organization => await GitHubApi.RemoveRunnerFromOrg(githubTarget.Name, githubTarget.GitHubToken, ghIdleRunner.Id),
+                    TargetType.Repository => await GitHubApi.RemoveRunnerFromRepo(githubTarget.Name, githubTarget.GitHubToken, ghIdleRunner.Id),
+                    _ => throw new ArgumentOutOfRangeException()
+                };
                
-            }
-            foreach (Pool pool in githubTarget.Pools)
-            {
-                // get all idle runners of size
-                if (pool.Profile == "default")
+                runner.IsOnline = false;
+                runner.Lifecycle.Add(new()
                 {
-                    List<GitHubRunner> idlePoolRunner = ghIdleRunners.Where(x => x.Labels.Any(y => y.Name == pool.Size)).ToList();
-                    while (idlePoolRunner.Count > pool.NumRunners)
-                    {
-                        GitHubRunner r = idlePoolRunner.PopAt(0);
-                        // Remove excess runners
-                        _logger.LogInformation($"Removing excess runner {r.Name} from {githubTarget.Name}");
-                        bool _ = githubTarget.Target switch
-                        {
-                            TargetType.Organization => await GitHubApi.RemoveRunnerFromOrg(githubTarget.Name, githubTarget.GitHubToken, r.Id),
-                            TargetType.Repository => await GitHubApi.RemoveRunnerFromRepo(githubTarget.Name, githubTarget.GitHubToken, r.Id),
-                            _ => throw new ArgumentOutOfRangeException()
-                        };
-                        long? htzSrvId = allHtzSrvs.FirstOrDefault(x => x.Name == r.Name)?.Id;
-                        if (htzSrvId.HasValue)
-                        {
-                            await _cc.DeleteRunner(htzSrvId.Value);
-                        }
-                    }
-                }
-                else
+                    Status = RunnerStatus.DeletionQueued,
+                    EventTimeUtc = DateTime.UtcNow,
+                    Event = $"Removing excessive idle runner {ghIdleRunner.Name} from org {githubTarget.Name}"
+                });
+                await db.SaveChangesAsync();
+                _logger.LogInformation($"Removing idle runner {ghIdleRunner.Name} from org {githubTarget.Name}");
+                _queues.DeleteTasks.Enqueue(new()
                 {
-                    List<GitHubRunner> idlePoolRunner = ghIdleRunners.Where(x => 
-                        x.Labels.Any(y => y.Name == pool.Size) &&
-                        x.Labels.Any(y => y.Name == $"profile-{pool.Profile}")
-                        ).ToList();
-                    while (idlePoolRunner.Count > pool.NumRunners)
-                    {
-                        GitHubRunner r = idlePoolRunner.PopAt(0);
-                        // Remove excess runners
-                        _logger.LogInformation($"Removing excess runner {r.Name} from {githubTarget.Name}");
-                        bool _ = githubTarget.Target switch
-                        {
-                            TargetType.Organization => await GitHubApi.RemoveRunnerFromOrg(githubTarget.Name, githubTarget.GitHubToken, r.Id),
-                            TargetType.Repository => await GitHubApi.RemoveRunnerFromRepo(githubTarget.Name, githubTarget.GitHubToken, r.Id),
-                            _ => throw new ArgumentOutOfRangeException()
-                        };
-                        long? htzSrvId = allHtzSrvs.FirstOrDefault(x => x.Name == r.Name)?.Id;
-                        if (htzSrvId.HasValue)
-                        {
-                            await _cc.DeleteRunner(htzSrvId.Value);
-                        }
-                    }
-                    
-                }
+                    ServerId = runner.CloudServerId,
+                    RunnerDbId = runner.RunnerId
+                }); 
             }
             
             // Get remaining runners registered to github
@@ -330,11 +320,11 @@ public class PoolManager : BackgroundService
                 TargetType.Repository => await GitHubApi.GetRunnersForRepo(githubTarget.GitHubToken, githubTarget.Name),
                 _ => throw new ArgumentOutOfRangeException()
             };
-            registeredServerNames.AddRange(githubRunners.Runners.Where(x => x.Name.StartsWith("ghr")).Select(x => x.Name));
+            registeredServerNames.AddRange(githubRunners.Runners.Where(x => x.Name.StartsWith(Program.Config.RunnerPrefix)).Select(x => x.Name));
         }
         
         // Remove every VM that's not in the github registered runners
-        List<Server> remainingHtzServer = await _cc.GetAllServers();
+        List<Server> remainingHtzServer = await _cc.GetAllServersFromCsp();
         foreach (Server htzSrv in remainingHtzServer)
         {
             if (registeredServerNames.Contains(htzSrv.Name))
@@ -343,26 +333,47 @@ public class PoolManager : BackgroundService
                 continue;
             }
 
-            if (DateTime.UtcNow - htzSrv.Created.ToUniversalTime() < TimeSpan.FromMinutes(30))
+            var runner = await db.Runners.Include(x => x.Lifecycle).FirstOrDefaultAsync(x => x.CloudServerId == htzSrv.Id);
+
+            if (runner.LastState >= RunnerStatus.Provisioned && DateTime.UtcNow - runner.LastStateTime > TimeSpan.FromMinutes(5))
             {
-                // VM younger than 30min - not cleaning yet
-                continue;
+                _logger.LogInformation($"Removing VM that is not in any GitHub registration: {htzSrv.Name} created at {htzSrv.Created:u}");
+                runner.IsOnline = false;
+                runner.Lifecycle.Add(new()
+                {
+                    Status = RunnerStatus.DeletionQueued,
+                    Event = "Removing as VM not longer in any GitHub registration",
+                    EventTimeUtc = DateTime.UtcNow
+                });
+                await db.SaveChangesAsync();
+                _queues.DeleteTasks.Enqueue(new()
+                {
+                    RunnerDbId = runner.RunnerId,
+                    ServerId = htzSrv.Id
+                });
+                    
             }
             
-            _logger.LogInformation($"Removing VM that is not in any GitHub registration: {htzSrv.Name} created at {htzSrv.Created:u}");
-            await _cc.DeleteRunner(htzSrv.Id);
         }
         
-        // Run a cloud controller sync
-        await _cc.SyncStoreAgainstHetzner();
-
     }
 
     private async Task<bool> DeleteRunner(DeleteRunnerTask rt)
     {
+        var db = new ActionsRunnerContext();
+        var runner = await db.Runners.Include(x => x.Lifecycle).FirstOrDefaultAsync(x => x.RunnerId == rt.RunnerDbId);
+        
         try
         {
             await _cc.DeleteRunner(rt.ServerId);
+            runner.IsOnline = false;
+            runner.Lifecycle.Add(new()
+            {
+                Status = RunnerStatus.Deleted,
+                EventTimeUtc = DateTime.UtcNow,
+                Event = "Runner was successfully deleted from CSP"
+            });
+            await db.SaveChangesAsync();
             return true;
         }
         catch (Exception ex)
@@ -373,34 +384,69 @@ public class PoolManager : BackgroundService
             if (rt.RetryCount < 10)
             {
                 _queues.DeleteTasks.Enqueue(rt);
+                runner.Lifecycle.Add(new RunnerLifecycle
+                {
+                    Status = RunnerStatus.Failure,
+                    EventTimeUtc = DateTime.UtcNow,
+                    Event = $"Unable to delete runner | Retry: {rt.RetryCount}: {ex.Message}"
+                });
             }
             else
             {
                 _logger.LogError($"Retries exceeded for {rt.ServerId}. Giving up.");
+                runner.Lifecycle.Add(new RunnerLifecycle
+                {
+                    Status = RunnerStatus.Failure,
+                    EventTimeUtc = DateTime.UtcNow,
+                    Event = $"Retries exceeded deleting runner. Giving up. | Retry: {rt.RetryCount}: {ex.Message}"
+                });
             }
 
+            await db.SaveChangesAsync();
             return false;
         }
     }
 
     private async Task<bool> CreateRunner(CreateRunnerTask rt)
     {
+        var db = new ActionsRunnerContext();
+        var runner = await db.Runners.Include(x => x.Lifecycle).FirstOrDefaultAsync(x => x.RunnerId == rt.RunnerDbId);
         try
         {
             string targetName = rt.TargetType switch
             {
                 TargetType.Repository => rt.RepoName,
-                TargetType.Organization => rt.OrgName,
+                TargetType.Organization => runner.Owner,
                 _ => throw new ArgumentOutOfRangeException()
             };
-            string newRunner = await _cc.CreateNewRunner(rt.Arch, rt.Size, rt.RunnerToken, targetName, rt.IsCustom, rt.ProfileName);
-            _logger.LogInformation($"New Runner {newRunner} [{rt.Size} on {rt.Arch}] entering pool for {targetName}.");
-            MachineCreatedCount.Labels(rt.OrgName, rt.Size).Inc();
+            Machine newRunner = await _cc.CreateNewRunner(runner.Arch, runner.Size, rt.RunnerToken, targetName, runner.IsCustom, runner.Profile);
+            _logger.LogInformation($"New Runner {newRunner.Name} [{runner.Size} on {runner.Arch}] entering pool for {targetName}.");
+            MachineCreatedCount.Labels(runner.Owner, runner.Size).Inc();
+
+            runner.Hostname = newRunner.Name;
+            runner.IsOnline = true;
+            runner.CloudServerId = newRunner.Id;
+            runner.IPv4 = newRunner.Ipv4;
+            
+            runner.Lifecycle.Add(new RunnerLifecycle
+            {
+                Status = RunnerStatus.Created,
+                EventTimeUtc = DateTime.UtcNow,
+                Event = $"New Runner {newRunner.Name} [{runner.Size} on {runner.Arch}] entering pool for {targetName}."
+            });
+            await db.SaveChangesAsync();
+            
             return true;
         }
         catch (Exception ex)
         {
-            _logger.LogError($"Unable to create runner [{rt.Size} on {rt.Arch} | Retry: {rt.RetryCount}]: {ex.Message}");
+            _logger.LogError($"Unable to create runner [{runner.Size} on {runner.Arch} | Retry: {rt.RetryCount}]: {ex.Message}");
+            runner.Lifecycle.Add(new RunnerLifecycle
+            {
+                Status = RunnerStatus.Failure,
+                EventTimeUtc = DateTime.UtcNow,
+                Event = $"Unable to create runner [{runner.Size} on {runner.Arch} | Retry: {rt.RetryCount}]: {ex.Message}"
+            });
             rt.RetryCount += 1;
             if (rt.RetryCount < 10)
             {
@@ -408,8 +454,15 @@ public class PoolManager : BackgroundService
             }
             else
             {
-                _logger.LogError($"Retries exceeded for {rt.Size} on {rt.Arch}. giving up.");
+                _logger.LogError($"Retries exceeded for {runner.Size} on {runner.Arch}. giving up.");
+                runner.Lifecycle.Add(new RunnerLifecycle
+                {
+                    Status = RunnerStatus.Failure,
+                    EventTimeUtc = DateTime.UtcNow,
+                    Event = $"Retries exceeded for {runner.Size} on {runner.Arch}. giving up."
+                });
             }
+            await db.SaveChangesAsync();
             return false;
         }
     }

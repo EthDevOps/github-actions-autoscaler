@@ -3,6 +3,7 @@ using System;
 using GithubActionsOrchestrator.Database;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace GithubActionsOrchestrator.Migrations
 {
     [DbContext(typeof(ActionsRunnerContext))]
-    partial class ActionsRunnerContextModelSnapshot : ModelSnapshot
+    [Migration("20240726114129_firsttry")]
+    partial class firsttry
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -54,16 +57,10 @@ namespace GithubActionsOrchestrator.Migrations
                     b.Property<string>("Repository")
                         .HasColumnType("text");
 
-                    b.Property<int?>("RunnerId")
-                        .HasColumnType("integer");
-
                     b.Property<int>("State")
                         .HasColumnType("integer");
 
                     b.HasKey("JobId");
-
-                    b.HasIndex("RunnerId")
-                        .IsUnique();
 
                     b.ToTable("Jobs");
                 });
@@ -88,16 +85,13 @@ namespace GithubActionsOrchestrator.Migrations
                     b.Property<string>("Hostname")
                         .HasColumnType("text");
 
-                    b.Property<string>("IPv4")
-                        .HasColumnType("text");
-
                     b.Property<bool>("IsCustom")
                         .HasColumnType("boolean");
 
                     b.Property<bool>("IsOnline")
                         .HasColumnType("boolean");
 
-                    b.Property<int?>("JobId")
+                    b.Property<int>("JobId")
                         .HasColumnType("integer");
 
                     b.Property<string>("Owner")
@@ -144,20 +138,13 @@ namespace GithubActionsOrchestrator.Migrations
                     b.ToTable("RunnerLifecycles");
                 });
 
-            modelBuilder.Entity("GithubActionsOrchestrator.Database.Job", b =>
-                {
-                    b.HasOne("GithubActionsOrchestrator.Database.Runner", "Runner")
-                        .WithOne()
-                        .HasForeignKey("GithubActionsOrchestrator.Database.Job", "RunnerId");
-
-                    b.Navigation("Runner");
-                });
-
             modelBuilder.Entity("GithubActionsOrchestrator.Database.Runner", b =>
                 {
                     b.HasOne("GithubActionsOrchestrator.Database.Job", "Job")
-                        .WithOne()
-                        .HasForeignKey("GithubActionsOrchestrator.Database.Runner", "JobId");
+                        .WithOne("Runner")
+                        .HasForeignKey("GithubActionsOrchestrator.Database.Runner", "JobId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
 
                     b.Navigation("Job");
                 });
@@ -167,6 +154,11 @@ namespace GithubActionsOrchestrator.Migrations
                     b.HasOne("GithubActionsOrchestrator.Database.Runner", null)
                         .WithMany("Lifecycle")
                         .HasForeignKey("RunnerId");
+                });
+
+            modelBuilder.Entity("GithubActionsOrchestrator.Database.Job", b =>
+                {
+                    b.Navigation("Runner");
                 });
 
             modelBuilder.Entity("GithubActionsOrchestrator.Database.Runner", b =>

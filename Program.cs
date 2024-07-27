@@ -1,8 +1,10 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using GithubActionsOrchestrator.Database;
 using GithubActionsOrchestrator.GitHub;
 using GithubActionsOrchestrator.Models;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using Prometheus;
 using Serilog;
 using Serilog.Events;
@@ -40,8 +42,6 @@ public class Program
             .CreateLogger();
 
 
-        string persistPath = Environment.GetEnvironmentVariable("PERSIST_DIR") ??
-                             Directory.CreateTempSubdirectory().FullName;
         string configDir = Environment.GetEnvironmentVariable("CONFIG_DIR") ??
                            Directory.CreateTempSubdirectory().FullName;
 
@@ -95,27 +95,41 @@ public class Program
         builder.Services.AddHostedService<PoolManager>();
 
         // Add services to the container.
-        builder.Services.AddAuthorization();
 
         // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
-        builder.Services.AddEndpointsApiExplorer();
-        builder.Services.AddSwaggerGen();
+        builder.Services.AddCors(options =>
+        {
+            options.AddPolicy("AllowAll", builder =>
+            {
+                builder
+                    .AllowAnyOrigin()    // Allow all origins
+                    .AllowAnyMethod()    // Allow all HTTP methods
+                    .AllowAnyHeader();   // Allow all headers
+            });
+        });
+        builder.Services.AddControllers();
 
         builder.Services.AddSingleton(svc =>
         {
             ILogger<CloudController> logger = svc.GetRequiredService<ILogger<CloudController>>();
-            return new CloudController(logger, Config.HetznerToken, persistPath, Config.Sizes,
+            return new CloudController(logger, Config.HetznerToken, Config.Sizes,
                 Config.ProvisionScriptBaseUrl, Config.MetricUser, Config.MetricPassword);
         });
 
         WebApplication app = builder.Build();
+        app.UseCors("AllowAll");
 
-        app.MapPost("/add-runner", AddRunnerHandler);
-        app.MapGet("/debug", DebugHandler);
+        app.MapPost("/add-runner", AddRunnerManuallyHandler);
         app.MapPost("/runner-state", RunnerStateReportHandler);
         app.MapPost("/github-webhook", GithubWebhookHandler);
-        
-        app.Run();
+        app.MapControllers();
+        foreach (var url in app.Urls)
+        {
+            Console.WriteLine($"Listening on {url}.");
+        }
+
+        Console.WriteLine("Start listening..."); 
+        app.Run(Program.Config.ListenUrl);
     }
 
     private static async Task<IResult> GithubWebhookHandler(HttpRequest request, [FromServices] CloudController cloud, [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue poolMgr)
@@ -147,7 +161,7 @@ public class Program
             .Select(x => x.GetString())
             .ToList();
 
-        bool isSelfHosted = labels.Any(x => x.StartsWith("self-hosted-ghr"));
+        bool isSelfHosted = labels.Any(x => x.StartsWith($"self-hosted-{Program.Config.RunnerPrefix}"));
 
         if (!isSelfHosted)
         {
@@ -158,6 +172,7 @@ public class Program
         long jobId = workflowJson.GetProperty("id").GetInt64();
         string repoNameRequest = json.RootElement.GetProperty("repository").GetProperty("full_name").GetString();
         string orgNameRequest = json.RootElement.GetProperty("organization").GetProperty("login").GetString();
+        string jobUrl = workflowJson.GetProperty("url").GetString();
 
         // Needed to get properly cased names
         string orgName = Config.TargetConfigs.FirstOrDefault(x => x.Target == TargetType.Organization && x.Name.ToLower() == orgNameRequest.ToLower())?.Name ?? orgNameRequest;
@@ -181,18 +196,59 @@ public class Program
             return Results.StatusCode(201);
         }
 
+        
+        var db = new ActionsRunnerContext();
+        
         try
         {
             switch (action)
             {
                 case "queued":
+                    Job queuedJob = new()
+                    {
+                        GithubJobId = jobId,
+                        Repository = repoName,
+                        Owner = orgName,
+                        State = JobState.Queued,
+                        QueueTime = DateTime.UtcNow,
+                        JobUrl = jobUrl,
+                        Orphan = false
+                    };
+                    await db.Jobs.AddAsync(queuedJob);
+                    await db.SaveChangesAsync();
                     await JobQueued(logger, repoName, labels, orgName, poolMgr, isRepo ? TargetType.Repository : TargetType.Organization);
                     break;
                 case "in_progress":
-                    JobInProgress(workflowJson, logger, jobId, cloud, repoName, orgName);
+                    var dbWorkflow = await db.Jobs.FirstOrDefaultAsync(x => x.GithubJobId == jobId);
+                    if (dbWorkflow == null)
+                    {
+                        logger.LogWarning("Processing job on manually created runner");
+                        Job progressJob = new()
+                        {
+                            GithubJobId = jobId,
+                            Repository = repoName,
+                            Owner = orgName,
+                            State = JobState.InProgress,
+                            InProgressTime = DateTime.UtcNow,
+                            JobUrl = jobUrl,
+                            Orphan = true
+                        };
+                        await db.Jobs.AddAsync(progressJob);
+                    }
+                    else
+                    {
+                        dbWorkflow.State = JobState.InProgress;
+                        dbWorkflow.QueueTime = DateTime.UtcNow;
+                    }
+                    await db.SaveChangesAsync();
+                    await JobInProgress(workflowJson, logger, jobId, repoName, orgName);
                     break;
                 case "completed":
-                    JobCompleted(logger, jobId, cloud, poolMgr, repoName);
+                    var dbWorkflowComplete = await db.Jobs.FirstOrDefaultAsync(x => x.GithubJobId == jobId);
+                    dbWorkflowComplete.State = JobState.Completed;
+                    dbWorkflowComplete.CompleteTime = DateTime.UtcNow;
+                    await db.SaveChangesAsync();
+                    await JobCompleted(logger, jobId, poolMgr, repoName, orgName);
                     break;
                 default:
                     logger.LogWarning("Unknown action. Ignoring");
@@ -212,12 +268,21 @@ public class Program
 
     private static async Task<IResult> RunnerStateReportHandler(HttpRequest request, [FromServices] CloudController cloud, [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue runnerQueue, [FromQuery] string hostname, [FromQuery] string state)
     {
+        var db = new ActionsRunnerContext();
+        var runner = await db.Runners.Include(x => x.Lifecycle).Include(x => x.Job).FirstOrDefaultAsync(x => x.Hostname == hostname);
         switch (state)
         {
             case "ok":
                 // Remove from provisioning dict
                 Log.Information($"Runner {hostname} finished provisioning.");
                 runnerQueue.CreatedRunners.Remove(hostname, out _);
+                runner.Lifecycle.Add(new()
+                {
+                    Event = "Runner finished provisioning",
+                    Status = RunnerStatus.Provisioned,
+                    EventTimeUtc = DateTime.UtcNow
+                });
+                await db.SaveChangesAsync();
                 break;
             case "error":
                 Log.Warning($"Runner {hostname} failed provisioning.");
@@ -230,7 +295,6 @@ public class Program
                 }
 
                 // Get runner specs
-                Machine runner = cloud.GetRunnerByHostname(hostname);
 
                 // Queue creation of a new runner
                 if (!runnerQueue.CreatedRunners.Remove(hostname, out CreateRunnerTask runnerSpec))
@@ -238,23 +302,18 @@ public class Program
                     logger.LogError($"Unable to get previous settings for {hostname}");
                 }
 
-                logger.LogInformation($"Re-creating runner of type [{runnerSpec.Size}, {runnerSpec.Arch}] for {runnerSpec.RepoName}");
+                logger.LogInformation($"Re-creating runner of type [{runner.Size}, {runner.Arch}] for {runner.Job.Repository}");
                 runnerQueue.CreateTasks.Enqueue(runnerSpec);
 
                 // Queue deletion of the failed runner
-                runnerQueue.DeleteTasks.Enqueue(new DeleteRunnerTask { ServerId = runner.Id });
+                runnerQueue.DeleteTasks.Enqueue(new DeleteRunnerTask { ServerId = runner.CloudServerId });
                 break;
         }
 
         return Results.StatusCode(201);
     }
 
-    private static IResult DebugHandler(HttpRequest request, [FromServices] CloudController cloud, [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue runnerQueue)
-    {
-        return Results.Json(cloud.GetAllRunners());
-    }
-
-    private static async Task<IResult> AddRunnerHandler(HttpRequest request, [FromServices] CloudController cloud, [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue runnerQueue, [FromServices] RunnerQueue poolMgr)
+    private static async Task<IResult> AddRunnerManuallyHandler(HttpRequest request, [FromServices] CloudController cloud, [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue runnerQueue, [FromServices] RunnerQueue poolMgr)
     {
         // Read webhook from github
         JsonDocument json = await request.ReadFromJsonAsync<JsonDocument>();
@@ -303,52 +362,100 @@ public class Program
         return Results.StatusCode(201);
     }
 
-    private static void JobCompleted(ILogger<Program> logger, long jobId, CloudController cloud, RunnerQueue poolMgr, string repoName)
+    private static async Task JobCompleted(ILogger<Program> logger, long jobId, RunnerQueue poolMgr, string repoName, string orgName)
     {
+        var db = new ActionsRunnerContext();
+        var job = await db.Jobs
+            .Include(job => job.Runner)
+            .ThenInclude(runner => runner.Lifecycle)
+            .FirstOrDefaultAsync(x => x.GithubJobId == jobId);
+
+        if (job == null)
+        {
+            logger.LogWarning($"No job in database with ID: {jobId} on repo {repoName}");
+            await db.Jobs.AddAsync(new Job
+            {
+                GithubJobId = jobId,
+                Repository = repoName,
+                Owner = orgName,
+                State = JobState.Completed,
+                Orphan = true,
+                CompleteTime = DateTime.UtcNow
+            });
+            await db.SaveChangesAsync();
+            return;
+        }
+        
         logger.LogInformation(
             $"Workflow Job {jobId} in repo {repoName} has completed. Queuing deletion of VM associated with Job.");
-        Machine vm = cloud.GetInfoForJob(jobId);
-        if (vm == null)
+        
+        if (job.Runner == null)
         {
             logger.LogError($"No VM on record for JobID: {jobId}");
         }
         else
         {
+            // record event in DB
+            job.Runner.Lifecycle.Add(new()
+            {
+                Status = RunnerStatus.DeletionQueued,
+                EventTimeUtc = DateTime.UtcNow,
+                Event = $"Workflow Job {jobId} in repo {repoName} has completed."
+            });
+            job.Runner.IsOnline = false;
+            await db.SaveChangesAsync();
+            
+            // Sent to pool manager to delete
             poolMgr.DeleteTasks.Enqueue(new DeleteRunnerTask
             {
-                ServerId = vm.Id,
+                ServerId = job.Runner.CloudServerId,
+                RunnerDbId = job.Runner.RunnerId
             });
-            ProcessedJobCount.Labels(vm.TargetName, vm.Size).Inc();
+            ProcessedJobCount.Labels(job.Owner, job.Runner.Size).Inc();
 
-            double secondsAlive = (DateTime.UtcNow - vm.CreatedAt).TotalSeconds;
-            TotalMachineTime.Labels(vm.TargetName, vm.Size).Inc(secondsAlive);
+            double secondsAlive = (DateTime.UtcNow - job.Runner.CreateTime).TotalSeconds;
+            TotalMachineTime.Labels(job.Owner, job.Runner.Size).Inc(secondsAlive);
         }
     }
 
-    private static void JobInProgress(JsonElement workflowJson, ILogger<Program> logger, long jobId, CloudController cloud,
+    private static async Task JobInProgress(JsonElement workflowJson, ILogger<Program> logger, long jobId,
         string repoName, string orgName)
     {
         string runnerName = workflowJson.GetProperty("runner_name").GetString();
-        string jobUrl = workflowJson.GetProperty("url").GetString();
         logger.LogInformation($"Workflow Job {jobId} in repo {repoName} now in progress on {runnerName}");
-        cloud.AddJobClaimToRunner(runnerName, jobId, jobUrl, repoName);
+        
+        // Make the connection between the job and the runner in the DB
+        var db = new ActionsRunnerContext();
+        var job = await db.Jobs.Include(x => x.Runner).FirstOrDefaultAsync(x => x.GithubJobId == jobId);
+        var runner = await db.Runners.Include(x => x.Job).Include(x => x.Lifecycle).FirstOrDefaultAsync(x => x.Hostname == runnerName);
+        runner.Job = job;
+        job.Runner = runner;
+        job.InProgressTime = DateTime.UtcNow;
+        runner.Lifecycle.Add(new()
+        {
+            Event = $"Runner got picked by job {jobId}",
+            Status = RunnerStatus.Processing,
+            EventTimeUtc = DateTime.UtcNow
+        });
+        
+        await db.SaveChangesAsync();
+       
+        // Metrics
+        PickedJobCount.Labels(orgName, runner.Size).Inc();
 
-        string jobSize = cloud.GetInfoForJob(jobId)?.Size;
-        if (jobSize != null) PickedJobCount.Labels(orgName, jobSize).Inc();
     }
 
     private static async Task JobQueued(ILogger<Program> logger, string repoName, List<string> labels, string orgName, RunnerQueue poolMgr, TargetType targetType)
     {
-        logger.LogInformation(
-            $"New Workflow Job was queued for {repoName}. Queuing VM creation to replenish pool...");
+        logger.LogInformation($"New Workflow Job was queued for {repoName}. Queuing VM creation to replenish pool...");
         
         string size = string.Empty;
         string arch = string.Empty;
-        string profileName = string.Empty;
+        string profileName = "default";
         bool isCustom = false;
 
         // Check if this is a custom run
-        if (labels.Contains("self-hosted-ghr-custom"))
+        if (labels.Contains($"self-hosted-{Config.RunnerPrefix}-custom"))
         {
             isCustom = true;
             // Check for a profile label
@@ -364,7 +471,7 @@ public class Program
         }
         foreach (MachineSize csize in Config.Sizes)
         {
-            if (labels.Contains(csize.Name) || labels.Contains($"self-hosted-ghr-{csize.Name}"))
+            if (labels.Contains(csize.Name) || labels.Contains($"self-hosted-{Config.RunnerPrefix}-{csize.Name}"))
             {
                 size = csize.Name;
                 arch = csize.Arch;
@@ -414,19 +521,39 @@ public class Program
             return;
         }
 
-        
+        // Record runner to database
+        await using var db = new ActionsRunnerContext();
+        Runner newRunner = new()
+        {
+            Size = size,
+            Cloud = "htz",
+            Hostname = "Unknown",
+            Profile = profileName,
+            Lifecycle =
+            [
+                new RunnerLifecycle
+                {
+                    EventTimeUtc = DateTime.UtcNow,
+                    Status = RunnerStatus.CreationQueued,
+                    Event = "Created as queued job runner"
+                }
+            ],
+            IsOnline = false,
+            Arch = arch,
+            IPv4 = string.Empty,
+            IsCustom = isCustom,
+            Owner = orgName
+            
+        };
+        await db.Runners.AddAsync(newRunner);
+        await db.SaveChangesAsync();
         
         poolMgr.CreateTasks.Enqueue(new CreateRunnerTask
         {
-            Arch = arch,
-            Size = size,
             RunnerToken = runnerToken,
-            OrgName = orgName,
             RepoName = repoName,
-            IsCustom = isCustom,
-            ProfileName = profileName,
             TargetType = targetType,
-            
+            RunnerDbId = newRunner.RunnerId
         });
 
         QueuedJobCount.Labels(orgName, size).Inc();
