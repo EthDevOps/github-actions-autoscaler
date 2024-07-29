@@ -8,7 +8,17 @@ using Serilog.Core;
 namespace GithubActionsOrchestrator;
 
 public static class GitHubApi {
-    public static async Task<GitHubRunners> GetRunnersForOrg(string githubToken, string orgName)
+    public static async Task<List<GitHubRunner>> GetRunnersForOrg(string githubToken, string orgName)
+    {
+        return await GetRunners(githubToken, $"orgs/{orgName}");
+    }
+    
+    public static async Task<List<GitHubRunner>> GetRunnersForRepo(string githubToken, string repoName)
+    {
+        return await GetRunners(githubToken, $"repos/{repoName}");
+    }
+    
+    private static async Task<List<GitHubRunner>> GetRunners(string githubToken, string ownerPath)
     {
         
         // Register a runner with github
@@ -18,42 +28,58 @@ public static class GitHubApi {
         client.DefaultRequestHeaders.Authorization = AuthenticationHeaderValue.Parse($"Bearer {githubToken}");
         client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("hetzner-autoscale", "1")); 
             
-        HttpResponseMessage response = await client.GetAsync(
-            $"https://api.github.com/orgs/{orgName}/actions/runners");
 
-        if(response.IsSuccessStatusCode)
-        {
-            string content = await response.Content.ReadAsStringAsync();
-            GitHubRunners responseObject = JsonSerializer.Deserialize<GitHubRunners>(content);
-            return responseObject;
-        }
+        var runners = new List<GitHubRunner>();
+        string url = $"https://api.github.com/{ownerPath}/actions/runners?per_page=100";
         
-        Log.Warning($"Unable to get GH runners for org: [{response.StatusCode}] {response.ReasonPhrase}");
+        while (!string.IsNullOrEmpty(url))
+        {
+            HttpResponseMessage response = await client.GetAsync(url);
+            if (response.IsSuccessStatusCode)
+            {
+                string content = await response.Content.ReadAsStringAsync();
+                var pageRunners = JsonSerializer.Deserialize<GitHubRunners>(content);
+                if (pageRunners != null)
+                {
+                    runners.AddRange(pageRunners.Runners);
+                }
 
-        return null;
+                url = GetNextPageUrl(response);
+            }
+            else
+            {
+                Log.Warning($"Unable to get GH runners for org: [{response.StatusCode}] {response.ReasonPhrase}");
+            }
+        }
+
+        return runners;
     }
-    public static async Task<GitHubRunners> GetRunnersForRepo(string githubToken, string repoName)
+    private static string GetNextPageUrl(HttpResponseMessage response)
     {
-        
-        // Register a runner with github
-        using HttpClient client = new();
-        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
-        client.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
-        client.DefaultRequestHeaders.Authorization = AuthenticationHeaderValue.Parse($"Bearer {githubToken}");
-        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("hetzner-autoscale", "1")); 
-            
-        HttpResponseMessage response = await client.GetAsync(
-            $"https://api.github.com/repos/{repoName}/actions/runners");
-
-        if(response.IsSuccessStatusCode)
+        if (response.Headers.TryGetValues("Link", out var links))
         {
-            string content = await response.Content.ReadAsStringAsync();
-            GitHubRunners responseObject = JsonSerializer.Deserialize<GitHubRunners>(content);
-            return responseObject;
+            foreach (var link in links)
+            {
+                // Example Link header format: <https://api.github.com/resource?page=2>; rel="next", ...
+                foreach (var part in link.Split(','))
+                {
+                    if (part.Contains("rel=\"next\""))
+                    {
+                        int startIndex = part.IndexOf('<') + 1;
+                        int endIndex = part.IndexOf('>');
+                        if (startIndex >= 0 && endIndex > startIndex)
+                        {
+                            return part[startIndex..endIndex];
+                        }
+                    }
+                }
+            }
         }
-        Log.Warning($"Unable to get GH runners for repo: [{response.StatusCode}] {response.ReasonPhrase}");
+
         return null;
     }
+
+    
     public static async Task<string> GetRunnerTokenForOrg(string githubToken, string orgName)
     {
         

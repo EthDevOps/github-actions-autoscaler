@@ -119,14 +119,14 @@ public class PoolManager : BackgroundService
                 GithubRunnersGauge.Labels(tgt.Name, "active").Set(0);
                 GithubRunnersGauge.Labels(tgt.Name, "idle").Set(0);
                 GithubRunnersGauge.Labels(tgt.Name, "offline").Set(0);
-                GitHubRunners orgRunners = tgt.Target switch
+                List<GitHubRunner> orgRunners = tgt.Target switch
                 {
                     TargetType.Repository => await GitHubApi.GetRunnersForRepo(tgt.GitHubToken, tgt.Name),
                     TargetType.Organization => await GitHubApi.GetRunnersForOrg(tgt.GitHubToken, tgt.Name),
                     _ => throw new ArgumentOutOfRangeException()
                 };
 
-                var ghStatus = orgRunners.Runners.Where(x => x.Name.StartsWith(Program.Config.RunnerPrefix)).GroupBy(x =>
+                var ghStatus = orgRunners.Where(x => x.Name.StartsWith(Program.Config.RunnerPrefix)).GroupBy(x =>
                 {
                     if (x.Busy)
                     {
@@ -288,7 +288,7 @@ public class PoolManager : BackgroundService
             _logger.LogInformation($"Cleaning runners for {githubTarget.Name}...");
 
             // Get runner infos
-            GitHubRunners githubRunners = githubTarget.Target switch
+            List<GitHubRunner> githubRunners = githubTarget.Target switch
             {
                 TargetType.Organization => await GitHubApi.GetRunnersForOrg(githubTarget.GitHubToken, githubTarget.Name),
                 TargetType.Repository => await GitHubApi.GetRunnersForRepo(githubTarget.GitHubToken, githubTarget.Name),
@@ -296,7 +296,7 @@ public class PoolManager : BackgroundService
             };
 
             // Remove all offline runner entries from GitHub
-            List<GitHubRunner> ghOfflineRunners = githubRunners.Runners.Where(x => x.Name.StartsWith(Program.Config.RunnerPrefix) && x.Status == "offline").ToList();
+            List<GitHubRunner> ghOfflineRunners = githubRunners.Where(x => x.Name.StartsWith(Program.Config.RunnerPrefix) && x.Status == "offline").ToList();
             foreach (GitHubRunner runnerToRemove in ghOfflineRunners)
             {
                 var runner = await db.Runners.Include(x => x.Lifecycle).FirstOrDefaultAsync(x => x.Hostname == runnerToRemove.Name);
@@ -337,7 +337,7 @@ public class PoolManager : BackgroundService
             }
            
             // remove any long idling runners. pool manager will start fresh ones eventually if needed. Keeps em fresh.
-            List<GitHubRunner> ghIdleRunners = githubRunners.Runners.Where(x => x.Name.StartsWith(Program.Config.RunnerPrefix) && x is { Status: "online", Busy: false }).ToList();
+            List<GitHubRunner> ghIdleRunners = githubRunners.Where(x => x.Name.StartsWith(Program.Config.RunnerPrefix) && x is { Status: "online", Busy: false }).ToList();
             foreach (GitHubRunner ghIdleRunner in ghIdleRunners)
             {
                 var runner = await db.Runners.Include(x => x.Lifecycle).FirstOrDefaultAsync(x => x.Hostname == ghIdleRunner.Name);
@@ -384,7 +384,7 @@ public class PoolManager : BackgroundService
                 TargetType.Repository => await GitHubApi.GetRunnersForRepo(githubTarget.GitHubToken, githubTarget.Name),
                 _ => throw new ArgumentOutOfRangeException()
             };
-            registeredServerNames.AddRange(githubRunners.Runners.Where(x => x.Name.StartsWith(Program.Config.RunnerPrefix)).Select(x => x.Name));
+            registeredServerNames.AddRange(githubRunners.Where(x => x.Name.StartsWith(Program.Config.RunnerPrefix)).Select(x => x.Name));
         }
         
         // Remove every VM that's not in the github registered runners
