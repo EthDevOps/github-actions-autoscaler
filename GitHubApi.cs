@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Text.Json;
 using GithubActionsOrchestrator.GitHub;
+using Npgsql.Replication;
 using Serilog;
 using Serilog.Core;
 
@@ -26,6 +27,8 @@ public static class GitHubApi {
             GitHubRunners responseObject = JsonSerializer.Deserialize<GitHubRunners>(content);
             return responseObject;
         }
+        
+        Log.Warning($"Unable to get GH runners for org: [{response.StatusCode}] {response.ReasonPhrase}");
 
         return null;
     }
@@ -48,8 +51,7 @@ public static class GitHubApi {
             GitHubRunners responseObject = JsonSerializer.Deserialize<GitHubRunners>(content);
             return responseObject;
         }
-
-        Log.Error($"Unable to talk to GitHub. Check Token.");
+        Log.Warning($"Unable to get GH runners for repo: [{response.StatusCode}] {response.ReasonPhrase}");
         return null;
     }
     public static async Task<string> GetRunnerTokenForOrg(string githubToken, string orgName)
@@ -71,6 +73,7 @@ public static class GitHubApi {
             GitHubResponse responseObject = JsonSerializer.Deserialize<GitHubResponse>(content);
             return responseObject?.token;
         }
+        Log.Warning($"Unable to get GH runner token for org: [{response.StatusCode}] {response.ReasonPhrase}");
 
         return null;
     }
@@ -93,6 +96,7 @@ public static class GitHubApi {
             GitHubResponse responseObject = JsonSerializer.Deserialize<GitHubResponse>(content);
             return responseObject?.token;
         }
+        Log.Warning($"Unable to get GH runner token for repo: [{response.StatusCode}] {response.ReasonPhrase}");
 
         return null;
     }
