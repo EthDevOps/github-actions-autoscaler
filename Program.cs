@@ -224,7 +224,7 @@ public class Program
                         {
                             GithubJobId = jobId,
                             Repository = repoName,
-                            Owner = orgName,
+                            Owner = isRepo ? repoName : orgName,
                             State = JobState.InProgress,
                             InProgressTime = DateTime.UtcNow,
                             JobUrl = jobUrl,

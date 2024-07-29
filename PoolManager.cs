@@ -224,7 +224,7 @@ public class PoolManager : BackgroundService
     {
         var db = new ActionsRunnerContext();
         var stuckTime = DateTime.UtcNow - TimeSpan.FromMinutes(10);
-        var stuckJobs = db.Jobs.Where(x => x.RunnerId == null && x.QueueTime < stuckTime).AsEnumerable();
+        var stuckJobs = await db.Jobs.Where(x => x.RunnerId == null && x.QueueTime < stuckTime).ToListAsync();
         foreach (var stuckJob in stuckJobs)
         {
             _logger.LogWarning($"Found stuck Job: {stuckJob.JobId} in {stuckJob.Repository}. Starting new runner to compensate...");
@@ -276,7 +276,7 @@ public class PoolManager : BackgroundService
                 RunnerDbId = newRunner.RunnerId,
                 
             }); 
-        }
+        } 
     }
 
     private async Task CleanUpRunners(List<GithubTargetConfiguration> targetConfigs)
