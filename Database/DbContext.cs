@@ -29,6 +29,33 @@ public class ActionsRunnerContext()
             .HasForeignKey<Job>(j => j.RunnerId)
             .IsRequired(false);
     }
+
+    public async Task<Runner> LinkJobToRunner(long jobId, string runnerName)
+    {
+        try
+        {
+            var job = await Jobs.Include(x => x.Runner).FirstOrDefaultAsync(x => x.GithubJobId == jobId);
+            var runner = await Runners.Include(x => x.Job).Include(x => x.Lifecycle).FirstOrDefaultAsync(x => x.Hostname == runnerName);
+            runner.Job = job;
+            job.Runner = runner;
+            job.InProgressTime = DateTime.UtcNow;
+            runner.Lifecycle.Add(new()
+            {
+                Event = $"Runner got picked by job {jobId}",
+                Status = RunnerStatus.Processing,
+                EventTimeUtc = DateTime.UtcNow
+            });
+            await SaveChangesAsync();
+            return runner;
+        }
+        catch
+        {
+            // unable to link
+            return null;
+        }
+
+    }
+    
 }
 
 // Runners provisioned over time

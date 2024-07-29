@@ -245,7 +245,7 @@ public class Program
                     dbWorkflowComplete.State = JobState.Completed;
                     dbWorkflowComplete.CompleteTime = DateTime.UtcNow;
                     await db.SaveChangesAsync();
-                    await JobCompleted(logger, jobId, poolMgr, repoName, orgName);
+                    await JobCompleted(logger, jobId, poolMgr, repoName, orgName, workflowJson);
                     break;
                 default:
                     logger.LogWarning("Unknown action. Ignoring");
@@ -359,7 +359,7 @@ public class Program
         return Results.StatusCode(201);
     }
 
-    private static async Task JobCompleted(ILogger<Program> logger, long jobId, RunnerQueue poolMgr, string repoName, string orgName)
+    private static async Task JobCompleted(ILogger<Program> logger, long jobId, RunnerQueue poolMgr, string repoName, string orgName, JsonElement workflowJson)
     {
         var db = new ActionsRunnerContext();
         var job = await db.Jobs
@@ -385,34 +385,46 @@ public class Program
         
         logger.LogInformation(
             $"Workflow Job {jobId} in repo {repoName} has completed. Queuing deletion of VM associated with Job.");
-        
+
+        Runner jobRunner = null;
         if (job.Runner == null)
         {
-            logger.LogError($"No VM on record for JobID: {jobId}");
+            // Retroactivly assign runner to job
+            string runnerName = workflowJson.GetProperty("runner_name").GetString();
+            logger.LogError($"No VM on record for JobID: {jobId}. Trying to re-link to {runnerName}.");
+            jobRunner = await db.LinkJobToRunner(jobId, runnerName);
+
+            if (jobRunner == null)
+            {
+                logger.LogError("Unable to link runner. aborting");
+                return;
+            }
         }
         else
         {
-            // record event in DB
-            job.Runner.Lifecycle.Add(new()
-            {
-                Status = RunnerStatus.DeletionQueued,
-                EventTimeUtc = DateTime.UtcNow,
-                Event = $"Workflow Job {jobId} in repo {repoName} has completed."
-            });
-            job.Runner.IsOnline = false;
-            await db.SaveChangesAsync();
-            
-            // Sent to pool manager to delete
-            poolMgr.DeleteTasks.Enqueue(new DeleteRunnerTask
-            {
-                ServerId = job.Runner.CloudServerId,
-                RunnerDbId = job.Runner.RunnerId
-            });
-            ProcessedJobCount.Labels(job.Owner, job.Runner.Size).Inc();
-
-            double secondsAlive = (DateTime.UtcNow - job.Runner.CreateTime).TotalSeconds;
-            TotalMachineTime.Labels(job.Owner, job.Runner.Size).Inc(secondsAlive);
+            jobRunner = job.Runner;
         }
+        
+        // record event in DB
+        jobRunner.Lifecycle.Add(new()
+        {
+            Status = RunnerStatus.DeletionQueued,
+            EventTimeUtc = DateTime.UtcNow,
+            Event = $"Workflow Job {jobId} in repo {repoName} has completed."
+        });
+        jobRunner.IsOnline = false;
+        await db.SaveChangesAsync();
+        
+        // Sent to pool manager to delete
+        poolMgr.DeleteTasks.Enqueue(new DeleteRunnerTask
+        {
+            ServerId = jobRunner.CloudServerId,
+            RunnerDbId = jobRunner.RunnerId
+        });
+        ProcessedJobCount.Labels(job.Owner, jobRunner.Size).Inc();
+
+        double secondsAlive = (DateTime.UtcNow - jobRunner.CreateTime).TotalSeconds;
+        TotalMachineTime.Labels(job.Owner, jobRunner.Size).Inc(secondsAlive);
     }
 
     private static async Task JobInProgress(JsonElement workflowJson, ILogger<Program> logger, long jobId,
@@ -423,19 +435,7 @@ public class Program
         
         // Make the connection between the job and the runner in the DB
         var db = new ActionsRunnerContext();
-        var job = await db.Jobs.Include(x => x.Runner).FirstOrDefaultAsync(x => x.GithubJobId == jobId);
-        var runner = await db.Runners.Include(x => x.Job).Include(x => x.Lifecycle).FirstOrDefaultAsync(x => x.Hostname == runnerName);
-        runner.Job = job;
-        job.Runner = runner;
-        job.InProgressTime = DateTime.UtcNow;
-        runner.Lifecycle.Add(new()
-        {
-            Event = $"Runner got picked by job {jobId}",
-            Status = RunnerStatus.Processing,
-            EventTimeUtc = DateTime.UtcNow
-        });
-        
-        await db.SaveChangesAsync();
+        Runner runner = await db.LinkJobToRunner(jobId, runnerName);
        
         // Metrics
         PickedJobCount.Labels(orgName, runner.Size).Inc();
