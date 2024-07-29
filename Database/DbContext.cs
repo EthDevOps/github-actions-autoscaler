@@ -123,4 +123,6 @@ public class Job
     public int? RunnerId { get; set; }
     public Runner Runner { get; set; }
     public bool Orphan { get; set; }
+    public string RequestedProfile { get; set; }
+    public string RequestedSize { get; set; }
 }

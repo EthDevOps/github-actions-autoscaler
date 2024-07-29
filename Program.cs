@@ -213,19 +213,7 @@ public class Program
             switch (action)
             {
                 case "queued":
-                    Job queuedJob = new()
-                    {
-                        GithubJobId = jobId,
-                        Repository = repoName,
-                        Owner = orgName,
-                        State = JobState.Queued,
-                        QueueTime = DateTime.UtcNow,
-                        JobUrl = jobUrl,
-                        Orphan = false
-                    };
-                    await db.Jobs.AddAsync(queuedJob);
-                    await db.SaveChangesAsync();
-                    await JobQueued(logger, repoName, labels, orgName, poolMgr, isRepo ? TargetType.Repository : TargetType.Organization);
+                    await JobQueued(logger, repoName, labels, orgName, poolMgr, isRepo ? TargetType.Repository : TargetType.Organization, jobId, jobUrl);
                     break;
                 case "in_progress":
                     var dbWorkflow = await db.Jobs.FirstOrDefaultAsync(x => x.GithubJobId == jobId);
@@ -358,7 +346,7 @@ public class Program
 
         try
         {
-            await JobQueued(logger, repoName, labels, orgName, poolMgr, isRepo ? TargetType.Repository : TargetType.Organization);
+            await JobQueued(logger, repoName, labels, orgName, poolMgr, isRepo ? TargetType.Repository : TargetType.Organization, -1, null);
         }
         catch (Exception ex)
         {
@@ -454,7 +442,7 @@ public class Program
 
     }
 
-    private static async Task JobQueued(ILogger<Program> logger, string repoName, List<string> labels, string orgName, RunnerQueue poolMgr, TargetType targetType)
+    private static async Task JobQueued(ILogger<Program> logger, string repoName, List<string> labels, string orgName, RunnerQueue poolMgr, TargetType targetType, long jobId, string jobUrl)
     {
         logger.LogInformation($"New Workflow Job was queued for {repoName}. Queuing VM creation to replenish pool...");
         
@@ -530,8 +518,31 @@ public class Program
             return;
         }
 
+        string owner = targetType switch
+        {
+            TargetType.Organization => orgName,
+            TargetType.Repository => repoName,
+            _ => throw new ArgumentOutOfRangeException(nameof(targetType), targetType, null)
+        };
         // Record runner to database
         await using var db = new ActionsRunnerContext();
+        if (jobId > 0)
+        {
+            Job queuedJob = new()
+            {
+                GithubJobId = jobId,
+                Repository = repoName,
+                Owner = owner,
+                State = JobState.Queued,
+                QueueTime = DateTime.UtcNow,
+                JobUrl = jobUrl,
+                Orphan = false,
+                RequestedProfile = profileName,
+                RequestedSize = size
+            };
+            await db.Jobs.AddAsync(queuedJob);
+        }
+
         Runner newRunner = new()
         {
             Size = size,
@@ -551,7 +562,7 @@ public class Program
             Arch = arch,
             IPv4 = string.Empty,
             IsCustom = isCustom,
-            Owner = orgName
+            Owner = owner
             
         };
         await db.Runners.AddAsync(newRunner);

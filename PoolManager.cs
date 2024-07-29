@@ -67,10 +67,9 @@ public class PoolManager : BackgroundService
             if (DateTime.UtcNow - crudeTimer > TimeSpan.FromMinutes(cullMinutes))
             {
                 _logger.LogInformation("Cleaning runners...");
-                // update the world state for htz
-                allHtzSrvs = await _cc.GetAllServersFromCsp();
                 await CleanUpRunners(targetConfig);
                 await StartPoolRunners(targetConfig);
+                await CheckForStuckJobs(targetConfig);
                 crudeTimer = DateTime.UtcNow;
             }
 
@@ -221,6 +220,65 @@ public class PoolManager : BackgroundService
         }
     }
 
+    private async Task CheckForStuckJobs(List<GithubTargetConfiguration> targetConfig)
+    {
+        var db = new ActionsRunnerContext();
+        var stuckTime = DateTime.UtcNow - TimeSpan.FromMinutes(10);
+        var stuckJobs = db.Jobs.Where(x => x.RunnerId == null && x.QueueTime < stuckTime).AsEnumerable();
+        foreach (var stuckJob in stuckJobs)
+        {
+            _logger.LogWarning($"Found stuck Job: {stuckJob.JobId} in {stuckJob.Repository}. Starting new runner to compensate...");
+
+            var owner = targetConfig.FirstOrDefault(x => x.Name == stuckJob.Owner);
+            if (owner == null)
+            {
+                _logger.LogError($"Unable to get owner for stuck job. {stuckJob.JobId}");
+                continue;
+            }
+            
+            string runnerToken = owner.Target switch
+            {
+                TargetType.Repository => await GitHubApi.GetRunnerTokenForRepo(owner.GitHubToken, owner.Name),
+                TargetType.Organization => await GitHubApi.GetRunnerTokenForOrg(owner.GitHubToken, owner.Name),
+                _ => throw new ArgumentOutOfRangeException()
+            };
+            var profile = stuckJob.RequestedProfile ?? "default";
+            string arch = Program.Config.Sizes.FirstOrDefault(x => x.Name == stuckJob.RequestedSize)?.Arch;
+            Runner newRunner = new()
+            {
+                Size = stuckJob.RequestedSize,
+                Cloud = "htz",
+                Hostname = "Unknown",
+                Profile = profile,
+                Lifecycle =
+                [
+                    new RunnerLifecycle
+                    {
+                        EventTimeUtc = DateTime.UtcNow,
+                        Status = RunnerStatus.CreationQueued,
+                        Event = $"Created for stuck job {stuckJob.JobId}"
+                    }
+                ],
+                IsOnline = false,
+                Arch = arch,
+                IPv4 = string.Empty,
+                IsCustom = profile != "default",
+                Owner = stuckJob.Owner
+            };
+            await db.Runners.AddAsync(newRunner);
+            await db.SaveChangesAsync();
+            
+            _queues.CreateTasks.Enqueue(new CreateRunnerTask
+            {
+                RunnerToken = runnerToken,
+                RepoName = stuckJob.Repository,
+                TargetType = owner.Target,
+                RunnerDbId = newRunner.RunnerId,
+                
+            }); 
+        }
+    }
+
     private async Task CleanUpRunners(List<GithubTargetConfiguration> targetConfigs)
     {
         List<string> registeredServerNames = new();
@@ -340,8 +398,18 @@ public class PoolManager : BackgroundService
             }
 
             var runner = await db.Runners.Include(x => x.Lifecycle).FirstOrDefaultAsync(x => x.CloudServerId == htzSrv.Id);
-
-            if (runner.LastState >= RunnerStatus.Provisioned && DateTime.UtcNow - runner.LastStateTime > TimeSpan.FromMinutes(5))
+            if (runner.Lifecycle.Any(x => x.Status == RunnerStatus.DeletionQueued))
+            {
+                runner.Lifecycle.Add(new()
+                {
+                    Status = RunnerStatus.DeletionQueued,
+                    Event = "Don't queue deletion due to Github registration. Runner already queued for deletion.",
+                    EventTimeUtc = DateTime.UtcNow
+                });
+                await db.SaveChangesAsync();
+                
+            }
+            else if (runner.LastState >= RunnerStatus.Provisioned && DateTime.UtcNow - runner.LastStateTime > TimeSpan.FromMinutes(5))
             {
                 _logger.LogInformation($"Removing VM that is not in any GitHub registration: {htzSrv.Name} created at {htzSrv.Created:u}");
                 runner.IsOnline = false;
