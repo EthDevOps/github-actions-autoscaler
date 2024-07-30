@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations.Schema;
+using System.Text.Json.Serialization;
 
 namespace GithubActionsOrchestrator.Database;
 using Microsoft.EntityFrameworkCore;
@@ -12,6 +13,8 @@ public class ActionsRunnerContext()
     public DbSet<Job> Jobs { get; set; }
     public DbSet<RunnerLifecycle> RunnerLifecycles { get; set; }
 
+    
+    
     protected override void OnConfiguring(DbContextOptionsBuilder options)
         => options.UseNpgsql(Program.Config.DbConnectionString);
 
@@ -148,6 +151,8 @@ public class Job
     
     //Relations
     public int? RunnerId { get; set; }
+
+    [JsonIgnore]
     public Runner Runner { get; set; }
     public bool Orphan { get; set; }
     public string RequestedProfile { get; set; }

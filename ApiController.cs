@@ -10,7 +10,7 @@ public class ApiController : Controller
     public async Task<IResult> GetRunners()
     {
         var db = new ActionsRunnerContext();
-        var recentRunners = await db.Runners.Include(x => x.Lifecycle).OrderByDescending(x => x.RunnerId).Take(100).ToListAsync();
+        var recentRunners = await db.Runners.Include(x => x.Lifecycle).Include(x => x.Job).OrderByDescending(x => x.RunnerId).Take(100).ToListAsync();
         return Results.Json(recentRunners);
     }
     

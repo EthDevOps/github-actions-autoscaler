@@ -116,7 +116,10 @@ public class Program
                     .AllowAnyHeader();   // Allow all headers
             });
         });
-        builder.Services.AddControllers();
+        builder.Services.AddControllers().AddJsonOptions(options =>
+         {
+             options.JsonSerializerOptions.ReferenceHandler = ReferenceHandler.IgnoreCycles;
+         });
 
         builder.Services.AddSingleton(svc =>
         {
