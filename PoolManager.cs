@@ -139,9 +139,9 @@ public class PoolManager : BackgroundService
 
         var jobsByState = await db.Jobs.GroupBy(x => x.State).Select(x => new { x.Key, Count = x.Count() }).ToListAsync();
        
-        QueuedJobsCount.Set(jobsByState.FirstOrDefault(x => x.Key == JobState.Queued)!.Count);
-        CompletedJobsCount.Set(jobsByState.FirstOrDefault(x => x.Key == JobState.Completed)!.Count);
-        InProgressJobsCount.Set(jobsByState.FirstOrDefault(x => x.Key == JobState.InProgress)!.Count);
+        QueuedJobsCount.Set(jobsByState.FirstOrDefault(x => x.Key == JobState.Queued)?.Count ?? 0);
+        CompletedJobsCount.Set(jobsByState.FirstOrDefault(x => x.Key == JobState.Completed)?.Count ?? 0);
+        InProgressJobsCount.Set(jobsByState.FirstOrDefault(x => x.Key == JobState.InProgress)?.Count ?? 0);
         
         // grab runner state counts
         
