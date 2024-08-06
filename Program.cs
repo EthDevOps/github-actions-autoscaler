@@ -25,7 +25,14 @@ public class Program
         .CreateCounter("github_autoscaler_jobs_picked", "Number of jobs picked up by a runner",
             labelNames: ["org", "size"]);
 
-
+    private static readonly Counter MachineFailedCount = Metrics
+        .CreateCounter("github_autoscaler_machine_failed", "Number of machines failed to provision",
+            labelNames: ["arch", "size"]);
+    
+    private static readonly Counter MachineSuccessCount = Metrics
+        .CreateCounter("github_autoscaler_machine_success", "Number of machines provisioned fine",
+            labelNames: ["arch", "size"]);
+    
     private static readonly Counter TotalMachineTime = Metrics
         .CreateCounter("github_total_machine_time", "Number of seconds machines were alive",
             labelNames: ["org", "size"]);
@@ -275,6 +282,7 @@ public class Program
             case "ok":
                 // Remove from provisioning dict
                 Log.Information($"Runner {hostname} finished provisioning.");
+                MachineSuccessCount.Labels(runner.Arch, runner.Size).Inc();
                 runnerQueue.CreatedRunners.Remove(hostname, out _);
                 runner.Lifecycle.Add(new()
                 {
@@ -286,6 +294,7 @@ public class Program
                 break;
             case "error":
                 Log.Warning($"Runner {hostname} failed provisioning.");
+                MachineFailedCount.Labels(runner.Arch, runner.Size).Inc();
                 if (request.Form.Files.Count > 0)
                 {
                     // Read the log file into a string
@@ -294,6 +303,12 @@ public class Program
                     Log.Information($"LOGS FROM {hostname}\n\n{fileContent}");
                 }
 
+                runner.Lifecycle.Add(new()
+                {
+                    Event = "Runner failed provisioning",
+                    Status = RunnerStatus.Failure,
+                    EventTimeUtc = DateTime.UtcNow
+                });
                 // Get runner specs
 
                 // Queue creation of a new runner
@@ -301,12 +316,44 @@ public class Program
                 {
                     logger.LogError($"Unable to get previous settings for {hostname}");
                 }
+                else
+                {
 
-                logger.LogInformation($"Re-creating runner of type [{runner.Size}, {runner.Arch}] for {runner.Job.Repository}");
-                runnerQueue.CreateTasks.Enqueue(runnerSpec);
+                    Runner newRunner = new()
+                    {
+                        Size = runner.Size,
+                        Cloud = runner.Cloud,
+                        Hostname = "Unknown",
+                        Profile = runner.Profile,
+                        Lifecycle =
+                        [
+                            new RunnerLifecycle
+                            {
+                                EventTimeUtc = DateTime.UtcNow,
+                                Status = RunnerStatus.CreationQueued,
+                                Event = $"Created as replacement for failed {hostname}"
+                            }
+                        ],
+                        IsOnline = false,
+                        Arch = runner.Arch,
+                        IPv4 = string.Empty,
+                        IsCustom = runner.IsCustom,
+                        Owner = runner.Owner
 
-                // Queue deletion of the failed runner
-                runnerQueue.DeleteTasks.Enqueue(new DeleteRunnerTask { ServerId = runner.CloudServerId });
+                    };
+                    await db.Runners.AddAsync(newRunner);
+                    await db.SaveChangesAsync();
+
+                    runnerSpec.RunnerDbId = newRunner.RunnerId;
+
+                    logger.LogInformation($"Re-creating runner of type [{runner.Size}, {runner.Arch}] for {runner.Job.Repository}");
+                    runnerQueue.CreateTasks.Enqueue(runnerSpec);
+
+                    // Queue deletion of the failed runner
+                    runnerQueue.DeleteTasks.Enqueue(new DeleteRunnerTask { ServerId = runner.CloudServerId });
+                    await db.SaveChangesAsync();
+                }
+
                 break;
         }
 
