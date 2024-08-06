@@ -456,21 +456,36 @@ public class Program
         }
         
         // record event in DB
-        jobRunner.Lifecycle.Add(new()
+        if (jobRunner.Lifecycle.Any(x => x.Status == RunnerStatus.DeletionQueued))
         {
-            Status = RunnerStatus.DeletionQueued,
-            EventTimeUtc = DateTime.UtcNow,
-            Event = $"Workflow Job {jobId} in repo {repoName} has completed."
-        });
-        jobRunner.IsOnline = false;
+            jobRunner.Lifecycle.Add(new()
+            {
+                Status = RunnerStatus.DeletionQueued,
+                EventTimeUtc = DateTime.UtcNow,
+                Event = $"Workflow Job {jobId} in repo {repoName} has completed. Deletion already queued."
+            });
+            jobRunner.IsOnline = false;
+            
+        }
+        else
+        {
+            jobRunner.Lifecycle.Add(new()
+            {
+                Status = RunnerStatus.DeletionQueued,
+                EventTimeUtc = DateTime.UtcNow,
+                Event = $"Workflow Job {jobId} in repo {repoName} has completed. Deletion queued."
+            });
+            jobRunner.IsOnline = false;
+            // Sent to pool manager to delete
+            poolMgr.DeleteTasks.Enqueue(new DeleteRunnerTask
+            {
+                ServerId = jobRunner.CloudServerId,
+                RunnerDbId = jobRunner.RunnerId
+            });
+        }
+
         await db.SaveChangesAsync();
         
-        // Sent to pool manager to delete
-        poolMgr.DeleteTasks.Enqueue(new DeleteRunnerTask
-        {
-            ServerId = jobRunner.CloudServerId,
-            RunnerDbId = jobRunner.RunnerId
-        });
         ProcessedJobCount.Labels(job.Owner, jobRunner.Size).Inc();
 
         double secondsAlive = (DateTime.UtcNow - jobRunner.CreateTime).TotalSeconds;

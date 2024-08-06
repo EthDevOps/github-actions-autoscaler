@@ -475,28 +475,14 @@ public class PoolManager : BackgroundService
         
         try
         {
-            if (runner.Lifecycle.Any(x => x.Status == RunnerStatus.DeletionQueued))
+            await _cc.DeleteRunner(rt.ServerId);
+            runner.IsOnline = false;
+            runner.Lifecycle.Add(new()
             {
-                runner.IsOnline = false;
-                runner.Lifecycle.Add(new()
-                {
-                    Status = RunnerStatus.Deleted,
-                    EventTimeUtc = DateTime.UtcNow,
-                    Event = "Runner already queued for deletion."
-                });
-            }
-            else
-            {
-
-                await _cc.DeleteRunner(rt.ServerId);
-                runner.IsOnline = false;
-                runner.Lifecycle.Add(new()
-                {
-                    Status = RunnerStatus.Deleted,
-                    EventTimeUtc = DateTime.UtcNow,
-                    Event = "Runner was successfully deleted from CSP"
-                });
-            }
+                Status = RunnerStatus.Deleted,
+                EventTimeUtc = DateTime.UtcNow,
+                Event = "Runner was successfully deleted from CSP"
+            });
             await db.SaveChangesAsync();
 
             return true;
