@@ -12,11 +12,17 @@ public class PoolManager : BackgroundService
     private readonly CloudController _cc;
     private readonly ILogger<PoolManager> _logger;
     private static readonly Counter MachineCreatedCount = Metrics
-        .CreateCounter("github_machines_created", "Number of created machines", labelNames: ["org","size"]);
-    private static readonly Gauge QueueSize = Metrics
-        .CreateGauge("github_queue", "Number of queued runner tasks");
+        .CreateCounter("github_autoscaler_machines_created", "Number of created machines", labelNames: ["org","size"]);
+    private static readonly Gauge CreateQueueSize = Metrics
+        .CreateGauge("github_autoscaler_create_queue", "Number of queued runner create tasks");
     private static readonly Gauge GithubRunnersGauge = Metrics
         .CreateGauge("github_registered_runners", "Number of runners registered to github actions", labelNames: ["org", "status"]);
+    private static readonly Gauge DeleteQueueSize = Metrics
+        .CreateGauge("github_autoscaler_delete_queue", "Number of queued runner delete tasks");
+    private static readonly Gauge ProvisionQueueSize = Metrics
+        .CreateGauge("github_autoscaler_runners_provisioning", "Number of runners currently provisioning");
+    private static readonly Gauge CspRunnerCount = Metrics
+        .CreateGauge("github_autoscaler_csp_runners", "Number of runners currently on the CSP", labelNames: ["csp"]);
 
     private readonly RunnerQueue _queues;
 
@@ -48,13 +54,17 @@ public class PoolManager : BackgroundService
        
         DateTime crudeTimer = DateTime.UtcNow;
         DateTime crudeStatsTimer = DateTime.UtcNow;
-        int cullMinutes = 3;
+        int cullMinutes = 5;
         int statsSeconds = 10;
         
         while (!stoppingToken.IsCancellationRequested)
         {
             // Grab some stats
-            QueueSize.Set(_queues.CreateTasks.Count + _queues.DeleteTasks.Count);
+            CreateQueueSize.Set(_queues.CreateTasks.Count);
+            DeleteQueueSize.Set(_queues.DeleteTasks.Count);
+            ProvisionQueueSize.Set(_queues.CreatedRunners.Count);
+            CspRunnerCount.Labels("htz").Set(await _cc.GetServerCountFromCsp()); 
+            
 
             if (DateTime.UtcNow - crudeStatsTimer > TimeSpan.FromSeconds(statsSeconds))
             {
@@ -439,15 +449,30 @@ public class PoolManager : BackgroundService
         
         try
         {
-            await _cc.DeleteRunner(rt.ServerId);
-            runner.IsOnline = false;
-            runner.Lifecycle.Add(new()
+            if (runner.Lifecycle.Any(x => x.Status == RunnerStatus.DeletionQueued))
             {
-                Status = RunnerStatus.Deleted,
-                EventTimeUtc = DateTime.UtcNow,
-                Event = "Runner was successfully deleted from CSP"
-            });
+                runner.IsOnline = false;
+                runner.Lifecycle.Add(new()
+                {
+                    Status = RunnerStatus.Deleted,
+                    EventTimeUtc = DateTime.UtcNow,
+                    Event = "Runner already queued for deletion."
+                });
+            }
+            else
+            {
+
+                await _cc.DeleteRunner(rt.ServerId);
+                runner.IsOnline = false;
+                runner.Lifecycle.Add(new()
+                {
+                    Status = RunnerStatus.Deleted,
+                    EventTimeUtc = DateTime.UtcNow,
+                    Event = "Runner was successfully deleted from CSP"
+                });
+            }
             await db.SaveChangesAsync();
+
             return true;
         }
         catch (Exception ex)
@@ -455,7 +480,7 @@ public class PoolManager : BackgroundService
             _logger.LogError(
                 $"Unable to delete runner [{rt.ServerId} | Retry: {rt.RetryCount}]: {ex.Message}");
             rt.RetryCount += 1;
-            if (rt.RetryCount < 10)
+            if (rt.RetryCount < 3)
             {
                 _queues.DeleteTasks.Enqueue(rt);
                 runner.Lifecycle.Add(new RunnerLifecycle
@@ -522,7 +547,7 @@ public class PoolManager : BackgroundService
                 Event = $"Unable to create runner [{runner.Size} on {runner.Arch} | Retry: {rt.RetryCount}]: {ex.Message}"
             });
             rt.RetryCount += 1;
-            if (rt.RetryCount < 10)
+            if (rt.RetryCount < 3)
             {
                 _queues.CreateTasks.Enqueue(rt);
             }

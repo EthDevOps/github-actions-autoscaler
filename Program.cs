@@ -27,14 +27,14 @@ public class Program
 
     private static readonly Counter MachineFailedCount = Metrics
         .CreateCounter("github_autoscaler_machine_failed", "Number of machines failed to provision",
-            labelNames: ["arch", "size"]);
+            labelNames: ["org", "size"]);
     
     private static readonly Counter MachineSuccessCount = Metrics
         .CreateCounter("github_autoscaler_machine_success", "Number of machines provisioned fine",
-            labelNames: ["arch", "size"]);
+            labelNames: ["org", "size"]);
     
     private static readonly Counter TotalMachineTime = Metrics
-        .CreateCounter("github_total_machine_time", "Number of seconds machines were alive",
+        .CreateCounter("github_autoscaler_total_machine_time", "Number of seconds machines were alive",
             labelNames: ["org", "size"]);
 
     public static void Main(string[] args)

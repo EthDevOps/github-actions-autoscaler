@@ -179,4 +179,8 @@ public class CloudController
         return srvs;
     }
 
+    public async Task<int> GetServerCountFromCsp()
+    {
+        return (await _client.Server.Get()).Count;
+    }
 }
