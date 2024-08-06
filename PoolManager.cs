@@ -430,6 +430,7 @@ public class PoolManager : BackgroundService
                 // If we know the server in github, skip
                 continue;
             }
+            _logger.LogInformation($"{htzSrv.Name} is a candidate to be killed from Hetzner");
 
             var runner = await db.Runners.Include(x => x.Lifecycle).FirstOrDefaultAsync(x => x.CloudServerId == htzSrv.Id);
             if (runner.Lifecycle.Any(x => x.Status == RunnerStatus.DeletionQueued))
@@ -444,7 +445,7 @@ public class PoolManager : BackgroundService
                 
             }
             else if ((runner.LastState >= RunnerStatus.Provisioned && DateTime.UtcNow - runner.LastStateTime > TimeSpan.FromMinutes(5)) || 
-                     (DateTime.UtcNow - runner.LastStateTime > TimeSpan.FromMinutes(30)))
+                     (DateTime.UtcNow - htzSrv.Created > TimeSpan.FromMinutes(40)))
             {
                 _logger.LogInformation($"Removing VM that is not in any GitHub registration: {htzSrv.Name} created at {htzSrv.Created:u}");
                 runner.IsOnline = false;
