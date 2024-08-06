@@ -23,6 +23,14 @@ public class PoolManager : BackgroundService
         .CreateGauge("github_autoscaler_runners_provisioning", "Number of runners currently provisioning");
     private static readonly Gauge CspRunnerCount = Metrics
         .CreateGauge("github_autoscaler_csp_runners", "Number of runners currently on the CSP", labelNames: ["csp"]);
+    private static readonly Gauge StuckJobsCount = Metrics
+        .CreateGauge("github_autoscaler_job_stuck", "Number of jobs not picked up after 15min");
+    private static readonly Gauge QueuedJobsCount = Metrics
+        .CreateGauge("github_autoscaler_job_queued", "Total Number of jobs queued");
+    private static readonly Gauge CompletedJobsCount = Metrics
+        .CreateGauge("github_autoscaler_job_completed", "Total Number of jobs completed");
+    private static readonly Gauge InProgressJobsCount = Metrics
+        .CreateGauge("github_autoscaler_job_inprogress", "Total Number of jobs inprogress");
 
     private readonly RunnerQueue _queues;
 
@@ -59,15 +67,11 @@ public class PoolManager : BackgroundService
         
         while (!stoppingToken.IsCancellationRequested)
         {
-            // Grab some stats
-            CreateQueueSize.Set(_queues.CreateTasks.Count);
-            DeleteQueueSize.Set(_queues.DeleteTasks.Count);
-            ProvisionQueueSize.Set(_queues.CreatedRunners.Count);
-            CspRunnerCount.Labels("htz").Set(await _cc.GetServerCountFromCsp()); 
             
 
             if (DateTime.UtcNow - crudeStatsTimer > TimeSpan.FromSeconds(statsSeconds))
             {
+                // Grab some stats
                 await ProcessStats(targetConfig);
                 crudeStatsTimer = DateTime.UtcNow;
             }
@@ -122,6 +126,26 @@ public class PoolManager : BackgroundService
 
     private async Task ProcessStats(List<GithubTargetConfiguration> targetConfig)
     {
+        CreateQueueSize.Set(_queues.CreateTasks.Count);
+        DeleteQueueSize.Set(_queues.DeleteTasks.Count);
+        ProvisionQueueSize.Set(_queues.CreatedRunners.Count);
+        CspRunnerCount.Labels("htz").Set(await _cc.GetServerCountFromCsp()); 
+        
+        // Grab job state counts
+        var db = new ActionsRunnerContext();
+        var stuckTime = DateTime.UtcNow - TimeSpan.FromMinutes(15);
+        var stuckJobs = await db.Jobs.CountAsync(x => x.State == JobState.Queued && x.RunnerId == null && x.QueueTime < stuckTime);
+        StuckJobsCount.Set(stuckJobs);
+
+        var jobsByState = await db.Jobs.GroupBy(x => x.State).Select(x => new { x.Key, Count = x.Count() }).ToListAsync();
+       
+        QueuedJobsCount.Set(jobsByState.FirstOrDefault(x => x.Key == JobState.Queued)!.Count);
+        CompletedJobsCount.Set(jobsByState.FirstOrDefault(x => x.Key == JobState.Completed)!.Count);
+        InProgressJobsCount.Set(jobsByState.FirstOrDefault(x => x.Key == JobState.InProgress)!.Count);
+        
+        // grab runner state counts
+        
+        // Github runner stats
         try
         {
             foreach (GithubTargetConfiguration tgt in targetConfig)
