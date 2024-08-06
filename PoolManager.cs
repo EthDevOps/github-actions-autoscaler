@@ -445,7 +445,7 @@ public class PoolManager : BackgroundService
                 
             }
             else if ((runner.LastState >= RunnerStatus.Provisioned && DateTime.UtcNow - runner.LastStateTime > TimeSpan.FromMinutes(5)) || 
-                     (DateTime.UtcNow - htzSrv.Created > TimeSpan.FromMinutes(40)))
+                     (runner.LastState != RunnerStatus.Processing && DateTime.UtcNow - htzSrv.Created.ToUniversalTime() > TimeSpan.FromMinutes(40)))
             {
                 _logger.LogInformation($"Removing VM that is not in any GitHub registration: {htzSrv.Name} created at {htzSrv.Created:u}");
                 runner.IsOnline = false;
