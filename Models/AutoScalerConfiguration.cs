@@ -18,4 +18,5 @@ public class AutoScalerConfiguration
 
     public string DbConnectionString { get; set; }
     public string ListenUrl { get; set; }
+    public string GithubAgentVersion { get; set; }
 }
