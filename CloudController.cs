@@ -117,6 +117,9 @@ public class CloudController
         List<SshKey> sshKeys = await _client.SshKey.Get();
         List<long> srvKeys = sshKeys.Select(x => x.Id).ToList();
         
+        // Grab private network
+        var networks = await _client.Network.Get();
+        
         // Create new server
         string runnerVersion = Program.Config.GithubAgentVersion;
         string provisionVersion = $"v{profile.ScriptVersion}";
@@ -141,7 +144,46 @@ public class CloudController
             .AppendLine($"  - [ sh, -xc, 'curl -fsSL {_provisionBaseUrl}/provision.{profile.ScriptName}.{arch}.{provisionVersion}.sh -o /data/provision.sh']")
             .AppendLine("  - [ sh, -xc, 'bash /data/provision.sh']")
             .ToString();
-        Server newSrv = await _client.Server.Create(eDataCenter.nbg1, imageId.Value, name, srvType.Value, userData: cloudInitcontent, sshKeysIds: srvKeys);
+
+        Server newSrv;
+        bool success = false;
+        List<eDataCenter> dataCenters =
+        [
+            eDataCenter.fsn1,
+            eDataCenter.hel1,
+            eDataCenter.nbg1
+        ];
+
+        int ct = 0;
+
+        while (!success)
+        {
+            if (ct == dataCenters.Count)
+            {
+                throw new Exception($"Unable to find any htz DC able to host {name} of size {size}");
+            }
+            try
+            {
+                newSrv = await _client.Server.Create(dataCenters[ct], imageId.Value, name, srvType.Value, userData: cloudInitcontent, sshKeysIds: srvKeys, privateNetoworksIds: networks.Select(x => x.Id).ToList());
+                success = true;
+            }
+            catch (Exception ex)
+            {
+                // Htz not able to schedule in nbg, try different one
+                if (ex.Message.Contains("resource_unavailable"))
+                {
+                    _logger.LogWarning($"Unable to create VM {name} from image {imageName} of size {size} in {dataCenters[ct]}. Trying different location.");
+                    ct++;
+                }
+                else
+                {
+                    throw;
+                }
+
+            }
+            
+        }
+
         return new Machine
         {
             Id = newSrv.Id,
@@ -176,11 +218,11 @@ public class CloudController
     public async Task<List<Server>> GetAllServersFromCsp()
     {
         List<Server> srvs = await _client.Server.Get();
-        return srvs;
+        return srvs.Where(x =>x.Name.StartsWith(Program.Config.RunnerPrefix)).ToList();
     }
 
     public async Task<int> GetServerCountFromCsp()
     {
-        return (await _client.Server.Get()).Count;
+        return (await GetAllServersFromCsp()).Count;
     }
 }

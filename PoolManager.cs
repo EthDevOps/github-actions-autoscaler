@@ -433,6 +433,11 @@ public class PoolManager : BackgroundService
             _logger.LogInformation($"{htzSrv.Name} is a candidate to be killed from Hetzner");
 
             var runner = await db.Runners.Include(x => x.Lifecycle).FirstOrDefaultAsync(x => x.CloudServerId == htzSrv.Id);
+            if (runner == null)
+            {
+                _logger.LogInformation($"{htzSrv.Name} is not found in the database");
+                continue; 
+            }
             if (runner.Lifecycle.Any(x => x.Status == RunnerStatus.DeletionQueued))
             {
                 runner.Lifecycle.Add(new()
