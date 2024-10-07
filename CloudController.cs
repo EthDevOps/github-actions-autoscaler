@@ -145,7 +145,7 @@ public class CloudController
             .AppendLine("  - [ sh, -xc, 'bash /data/provision.sh']")
             .ToString();
 
-        Server newSrv;
+        Server newSrv = null;
         bool success = false;
         List<eDataCenter> dataCenters =
         [
@@ -182,6 +182,11 @@ public class CloudController
 
             }
             
+        }
+
+        if (newSrv == null)
+        {
+            throw new Exception("Unable to spin up VM for " + name);
         }
 
         return new Machine
