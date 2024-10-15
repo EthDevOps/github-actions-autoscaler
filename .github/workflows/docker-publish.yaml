@@ -49,7 +49,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ vars.DOCKER_REGISTRY }}/${{ github.repository }}/
+          images: ${{ vars.DOCKER_REGISTRY }}/${{ vars.DOCKER_REGISTRY_PROJECT }}/${{ github.repository }}
 
       # Build and push Docker image with Buildx (don't push on PR)
       # https://github.com/docker/build-push-action
