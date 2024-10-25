@@ -17,8 +17,8 @@
       "applicationUrl": "http://localhost:5178",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
-        "CONFIG_DIR": "/Users/markuskeil/dev/tmp",
-        "PERSIST_DIR": "/Users/markuskeil/dev/tmp"
+        "CONFIG_DIR": "/Users/markus/dev/tmp",
+        "PERSIST_DIR": "/Users/markus/dev/tmp"
       }
     },
     "https": {

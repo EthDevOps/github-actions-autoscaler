@@ -106,6 +106,8 @@ public class Runner
            return Lifecycle.MaxBy(x => x.EventTimeUtc).EventTimeUtc;
         }
     }
+
+    public bool StuckJobReplacement { get; set; } = false;
 }
 
 public enum RunnerStatus

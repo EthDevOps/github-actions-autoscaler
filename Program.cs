@@ -76,6 +76,7 @@ public class Program
             Log.Error($"Hetzner cloud token not set in {configPath}");
             return;
         }
+ 
 
         Log.Information($"Loaded {Config.TargetConfigs.Count} targets and {Config.Sizes.Count} sizes.");
 
@@ -111,6 +112,7 @@ public class Program
         builder.Services.AddHostedService<PoolManager>();
 
         // Add services to the container.
+        
 
         // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
         builder.Services.AddCors(options =>
@@ -490,6 +492,7 @@ public class Program
 
         double secondsAlive = (DateTime.UtcNow - jobRunner.CreateTime).TotalSeconds;
         TotalMachineTime.Labels(job.Owner, jobRunner.Size).Inc(secondsAlive);
+        
     }
 
     private static async Task JobInProgress(JsonElement workflowJson, ILogger<Program> logger, long jobId,

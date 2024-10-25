@@ -50,9 +50,6 @@ public class PoolManager : BackgroundService
 
         List<GithubTargetConfiguration> targetConfig = Program.Config.TargetConfigs;
         
-        // Cull runners
-        List<Server> allHtzSrvs = await _cc.GetAllServersFromCsp();
-
         await CleanUpRunners(targetConfig);
         await StartPoolRunners(targetConfig);
         _logger.LogInformation("Poolmanager init done.");
@@ -297,7 +294,9 @@ public class PoolManager : BackgroundService
                 Arch = arch,
                 IPv4 = string.Empty,
                 IsCustom = profile != "default",
-                Owner = stuckJob.Owner
+                Owner = stuckJob.Owner,
+                StuckJobReplacement = true
+                
             };
             await db.Runners.AddAsync(newRunner);
             await db.SaveChangesAsync();
@@ -422,55 +421,64 @@ public class PoolManager : BackgroundService
         }
         
         // Remove every VM that's not in the github registered runners
-        List<Server> remainingHtzServer = await _cc.GetAllServersFromCsp();
-        foreach (Server htzSrv in remainingHtzServer)
+        try
         {
-            if (registeredServerNames.Contains(htzSrv.Name))
+            List<Server> remainingHtzServer = await _cc.GetAllServersFromCsp();
+            foreach (Server htzSrv in remainingHtzServer)
             {
-                // If we know the server in github, skip
-                continue;
-            }
-            _logger.LogInformation($"{htzSrv.Name} is a candidate to be killed from Hetzner");
+                if (registeredServerNames.Contains(htzSrv.Name))
+                {
+                    // If we know the server in github, skip
+                    continue;
+                }
 
-            var runner = await db.Runners.Include(x => x.Lifecycle).FirstOrDefaultAsync(x => x.CloudServerId == htzSrv.Id);
-            if (runner == null)
-            {
-                _logger.LogInformation($"{htzSrv.Name} is not found in the database");
-                continue; 
-            }
-            if (runner.Lifecycle.Any(x => x.Status == RunnerStatus.DeletionQueued))
-            {
-                runner.Lifecycle.Add(new()
+                _logger.LogInformation($"{htzSrv.Name} is a candidate to be killed from Hetzner");
+
+                var runner = await db.Runners.Include(x => x.Lifecycle).FirstOrDefaultAsync(x => x.CloudServerId == htzSrv.Id);
+                if (runner == null)
                 {
-                    Status = RunnerStatus.DeletionQueued,
-                    Event = "Don't queue deletion due to Github registration. Runner already queued for deletion.",
-                    EventTimeUtc = DateTime.UtcNow
-                });
-                await db.SaveChangesAsync();
-                
-            }
-            else if ((runner.LastState >= RunnerStatus.Provisioned && DateTime.UtcNow - runner.LastStateTime > TimeSpan.FromMinutes(5)) || 
-                     (runner.LastState != RunnerStatus.Processing && DateTime.UtcNow - htzSrv.Created.ToUniversalTime() > TimeSpan.FromMinutes(40)))
-            {
-                _logger.LogInformation($"Removing VM that is not in any GitHub registration: {htzSrv.Name} created at {htzSrv.Created:u}");
-                runner.IsOnline = false;
-                runner.Lifecycle.Add(new()
+                    _logger.LogInformation($"{htzSrv.Name} is not found in the database");
+                    continue;
+                }
+
+                if (runner.Lifecycle.Any(x => x.Status == RunnerStatus.DeletionQueued))
                 {
-                    Status = RunnerStatus.DeletionQueued,
-                    Event = "Removing as VM not longer in any GitHub registration",
-                    EventTimeUtc = DateTime.UtcNow
-                });
-                await db.SaveChangesAsync();
-                _queues.DeleteTasks.Enqueue(new()
+                    runner.Lifecycle.Add(new()
+                    {
+                        Status = RunnerStatus.DeletionQueued,
+                        Event = "Don't queue deletion due to Github registration. Runner already queued for deletion.",
+                        EventTimeUtc = DateTime.UtcNow
+                    });
+                    await db.SaveChangesAsync();
+
+                }
+                else if ((runner.LastState >= RunnerStatus.Provisioned && DateTime.UtcNow - runner.LastStateTime > TimeSpan.FromMinutes(5)) ||
+                         (runner.LastState != RunnerStatus.Processing && DateTime.UtcNow - htzSrv.Created.ToUniversalTime() > TimeSpan.FromMinutes(40)))
                 {
-                    RunnerDbId = runner.RunnerId,
-                    ServerId = htzSrv.Id
-                });
-                    
+                    _logger.LogInformation($"Removing VM that is not in any GitHub registration: {htzSrv.Name} created at {htzSrv.Created:u}");
+                    runner.IsOnline = false;
+                    runner.Lifecycle.Add(new()
+                    {
+                        Status = RunnerStatus.DeletionQueued,
+                        Event = "Removing as VM not longer in any GitHub registration",
+                        EventTimeUtc = DateTime.UtcNow
+                    });
+                    await db.SaveChangesAsync();
+                    _queues.DeleteTasks.Enqueue(new()
+                    {
+                        RunnerDbId = runner.RunnerId,
+                        ServerId = htzSrv.Id
+                    });
+
+                }
+
             }
-            
         }
-        
+        catch (Exception ex)
+        {
+            _logger.LogError($"Failed during cleanup from CSP: {ex.Message}");
+        }
+
     }
 
     private async Task<bool> DeleteRunner(DeleteRunnerTask rt)
@@ -564,13 +572,14 @@ public class PoolManager : BackgroundService
                 Event = $"Unable to create runner [{runner.Size} on {runner.Arch} | Retry: {rt.RetryCount}]: {ex.Message}"
             });
             rt.RetryCount += 1;
-            if (rt.RetryCount < 3)
+            // Don't retry stuck job runners - the stuck job detector will create retry servers
+            if (rt.RetryCount < 3 && !runner.StuckJobReplacement)
             {
                 _queues.CreateTasks.Enqueue(rt);
             }
             else
             {
-                _logger.LogError($"Retries exceeded for {runner.Size} on {runner.Arch}. giving up.");
+                _logger.LogError(runner.StuckJobReplacement ? $"Retries exceeded for {runner.Size} on {runner.Arch}. giving up. (Stuck job replacement)" : $"Retries exceeded for {runner.Size} on {runner.Arch}. giving up.");
                 runner.Lifecycle.Add(new RunnerLifecycle
                 {
                     Status = RunnerStatus.Failure,
