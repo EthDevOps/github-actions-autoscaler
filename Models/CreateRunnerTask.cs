@@ -10,4 +10,5 @@ public record CreateRunnerTask
     public string RepoName { get; set; }
     public int RunnerDbId { get; set; }
     public bool IsStuckReplacement { get; set; }
+    public int? StuckJobId { get; set; }
 }

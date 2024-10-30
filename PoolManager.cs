@@ -266,8 +266,15 @@ public class PoolManager : BackgroundService
                 _logger.LogError($"Unable to get owner for stuck job. {stuckJob.JobId}");
                 continue;
             }
+            
+            // Check if there is already a runner in queue to unstuck
+            if (_queues.CreateTasks.Any(x => x.IsStuckReplacement && x.StuckJobId == stuckJob.JobId))
+            {
+                _logger.LogWarning($"Creating queue already has a task for jobs {stuckJob.JobId}");
+                continue;
+            }
+            
             int replacementsInQueue =  _queues.CreateTasks.Count(x => x.IsStuckReplacement);
-
             if (replacementsInQueue > 25)
             {
                 _logger.LogWarning($"Creating queue already has {replacementsInQueue} stuck jobs replacements. No adding more strain");
@@ -308,14 +315,15 @@ public class PoolManager : BackgroundService
             await db.Runners.AddAsync(newRunner);
             await db.SaveChangesAsync();
            
-                _queues.CreateTasks.Enqueue(new CreateRunnerTask
-                {
-                    RunnerToken = runnerToken,
-                    RepoName = stuckJob.Repository,
-                    TargetType = owner.Target,
-                    RunnerDbId = newRunner.RunnerId,
-                    IsStuckReplacement = true
-                });
+            _queues.CreateTasks.Enqueue(new CreateRunnerTask
+            {
+                RunnerToken = runnerToken,
+                RepoName = stuckJob.Repository,
+                TargetType = owner.Target,
+                RunnerDbId = newRunner.RunnerId,
+                IsStuckReplacement = true,
+                StuckJobId = stuckJob.JobId
+            });
         } 
     }
 
