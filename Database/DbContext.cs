@@ -108,6 +108,7 @@ public class Runner
     }
 
     public bool StuckJobReplacement { get; set; } = false;
+    public bool UsePrivateNetwork { get; set; }
 }
 
 public enum RunnerStatus

@@ -9,4 +9,5 @@ public record CreateRunnerTask
     public TargetType TargetType { get; set; }
     public string RepoName { get; set; }
     public int RunnerDbId { get; set; }
+    public bool IsStuckReplacement { get; set; }
 }

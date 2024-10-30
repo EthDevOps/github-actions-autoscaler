@@ -266,7 +266,14 @@ public class PoolManager : BackgroundService
                 _logger.LogError($"Unable to get owner for stuck job. {stuckJob.JobId}");
                 continue;
             }
-            
+            int replacementsInQueue =  _queues.CreateTasks.Count(x => x.IsStuckReplacement);
+
+            if (replacementsInQueue > 25)
+            {
+                _logger.LogWarning($"Creating queue already has {replacementsInQueue} stuck jobs replacements. No adding more strain");
+                continue;
+            }
+
             string runnerToken = owner.Target switch
             {
                 TargetType.Repository => await GitHubApi.GetRunnerTokenForRepo(owner.GitHubToken, owner.Name),
@@ -300,15 +307,15 @@ public class PoolManager : BackgroundService
             };
             await db.Runners.AddAsync(newRunner);
             await db.SaveChangesAsync();
-            
-            _queues.CreateTasks.Enqueue(new CreateRunnerTask
-            {
-                RunnerToken = runnerToken,
-                RepoName = stuckJob.Repository,
-                TargetType = owner.Target,
-                RunnerDbId = newRunner.RunnerId,
-                
-            }); 
+           
+                _queues.CreateTasks.Enqueue(new CreateRunnerTask
+                {
+                    RunnerToken = runnerToken,
+                    RepoName = stuckJob.Repository,
+                    TargetType = owner.Target,
+                    RunnerDbId = newRunner.RunnerId,
+                    IsStuckReplacement = true
+                });
         } 
     }
 
@@ -543,7 +550,7 @@ public class PoolManager : BackgroundService
                 TargetType.Organization => runner.Owner,
                 _ => throw new ArgumentOutOfRangeException()
             };
-            Machine newRunner = await _cc.CreateNewRunner(runner.Arch, runner.Size, rt.RunnerToken, targetName, runner.IsCustom, runner.Profile);
+            Machine newRunner = await _cc.CreateNewRunner(runner.Arch, runner.Size, rt.RunnerToken, targetName, runner.IsCustom, runner.Profile, runner.UsePrivateNetwork);
             _logger.LogInformation($"New Runner {newRunner.Name} [{runner.Size} on {runner.Arch}] entering pool for {targetName}.");
             MachineCreatedCount.Labels(runner.Owner, runner.Size).Inc();
 
