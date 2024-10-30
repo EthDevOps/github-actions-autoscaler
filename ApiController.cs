@@ -7,18 +7,18 @@ namespace GithubActionsOrchestrator;
 public class ApiController : Controller
 {
     [Route("get-runners")]
-    public async Task<IResult> GetRunners()
+    public async Task<IResult> GetRunners([FromQuery] int limit = 100, [FromQuery] int offset = 0)
     {
         var db = new ActionsRunnerContext();
-        var recentRunners = await db.Runners.Include(x => x.Lifecycle).Include(x => x.Job).OrderByDescending(x => x.RunnerId).Take(100).ToListAsync();
+        var recentRunners = await db.Runners.Include(x => x.Lifecycle).Include(x => x.Job).OrderByDescending(x => x.RunnerId).Skip(offset).Take(limit).ToListAsync();
         return Results.Json(recentRunners);
     }
     
     [Route("get-jobs")]
-    public async Task<IResult> GetJobs()
+    public async Task<IResult> GetJobs([FromQuery] int limit = 100, [FromQuery] int offset = 0)
     {
         var db = new ActionsRunnerContext();
-        var recentRunners = await db.Jobs.OrderByDescending(x => x.JobId).Take(100).ToListAsync();
+        var recentRunners = await db.Jobs.OrderByDescending(x => x.JobId).Skip(offset).Take(limit).ToListAsync();
         return Results.Json(recentRunners);
     }
     
