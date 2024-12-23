@@ -340,10 +340,7 @@ public class Program
                         Arch = runner.Arch,
                         IPv4 = string.Empty,
                         IsCustom = runner.IsCustom,
-                        Owner = runner.Owner,
-                        UsePrivateNetwork = runner.UsePrivateNetwork
-                        
-
+                        Owner = runner.Owner
                     };
                     await db.Runners.AddAsync(newRunner);
                     await db.SaveChangesAsync();
@@ -632,8 +629,7 @@ public class Program
             Arch = arch,
             IPv4 = string.Empty,
             IsCustom = isCustom,
-            Owner = owner,
-            UsePrivateNetwork = labels.Contains("use-cache-server")
+            Owner = owner
             
         };
         await db.Runners.AddAsync(newRunner);

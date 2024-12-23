@@ -64,7 +64,7 @@ public class CloudController
         return name;
     }
     
-    public async Task<Machine> CreateNewRunner(string arch, string size, string runnerToken, string targetName, bool isCustom = false, string profileName = "default", bool usePrivateNetworks = false)
+    public async Task<Machine> CreateNewRunner(string arch, string size, string runnerToken, string targetName, bool isCustom = false, string profileName = "default")
     {
         
         // Select VM size for job - All AMD 
@@ -164,7 +164,7 @@ public class CloudController
             }
             try
             {
-                var privateNetworks = usePrivateNetworks ? networks.Select(x => x.Id).ToList() : new List<long>();
+                var privateNetworks = profile.UsePrivateNetworks ? networks.Select(x => x.Id).ToList() : new List<long>();
                 
                 newSrv = await _client.Server.Create(dataCenters[ct], imageId.Value, name, srvType.Value, userData: cloudInitcontent, sshKeysIds: srvKeys, privateNetoworksIds: privateNetworks);
                 success = true;

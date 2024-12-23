@@ -558,7 +558,7 @@ public class PoolManager : BackgroundService
                 TargetType.Organization => runner.Owner,
                 _ => throw new ArgumentOutOfRangeException()
             };
-            Machine newRunner = await _cc.CreateNewRunner(runner.Arch, runner.Size, rt.RunnerToken, targetName, runner.IsCustom, runner.Profile, runner.UsePrivateNetwork);
+            Machine newRunner = await _cc.CreateNewRunner(runner.Arch, runner.Size, rt.RunnerToken, targetName, runner.IsCustom, runner.Profile);
             _logger.LogInformation($"New Runner {newRunner.Name} [{runner.Size} on {runner.Arch}] entering pool for {targetName}.");
             MachineCreatedCount.Labels(runner.Owner, runner.Size).Inc();
 

@@ -7,4 +7,5 @@ public class RunnerProfile
     public string OsImageName { get; set; }
     public bool IsCustomImage { get; set; }
     public string Name { get; set; }
+    public bool UsePrivateNetworks { get; set; }
 }
