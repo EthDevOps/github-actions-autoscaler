@@ -49,6 +49,7 @@ public static class GitHubApi {
             else
             {
                 Log.Warning($"Unable to get GH runners for org: [{response.StatusCode}] {response.ReasonPhrase}");
+                break;
             }
         }
 
