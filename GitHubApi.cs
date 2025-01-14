@@ -48,7 +48,7 @@ public static class GitHubApi {
             }
             else
             {
-                Log.Warning($"Unable to get GH runners for org: [{response.StatusCode}] {response.ReasonPhrase}");
+                Log.Warning($"Unable to get GH runners for org {ownerPath}: [{response.StatusCode}] {response.ReasonPhrase}");
                 break;
             }
         }
