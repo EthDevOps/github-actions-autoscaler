@@ -100,7 +100,7 @@ public static class GitHubApi {
             GitHubResponse responseObject = JsonSerializer.Deserialize<GitHubResponse>(content);
             return responseObject?.token;
         }
-        Log.Warning($"Unable to get GH runner token for org: [{response.StatusCode}] {response.ReasonPhrase}");
+        Log.Warning($"Unable to get GH runner token for org {orgName}: [{response.StatusCode}] {response.ReasonPhrase}");
 
         return null;
     }
@@ -123,7 +123,7 @@ public static class GitHubApi {
             GitHubResponse responseObject = JsonSerializer.Deserialize<GitHubResponse>(content);
             return responseObject?.token;
         }
-        Log.Warning($"Unable to get GH runner token for repo: [{response.StatusCode}] {response.ReasonPhrase}");
+        Log.Warning($"Unable to get GH runner token for repo {repoName}: [{response.StatusCode}] {response.ReasonPhrase}");
 
         return null;
     }
