@@ -156,4 +156,66 @@ public static class GitHubApi {
         return response.IsSuccessStatusCode;
 
     }
+
+    public static async Task<GitHubJob> GetJobInfo(long stuckJobGithubJobId,string repoName, string orgGitHubToken)
+    {
+        using HttpClient client = new();
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+        client.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
+        client.DefaultRequestHeaders.Authorization = AuthenticationHeaderValue.Parse($"Bearer {orgGitHubToken}");
+        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("hetzner-autoscale", "1"));
+
+        HttpResponseMessage response = await client.GetAsync(
+            $"https://api.github.com/orgs/{repoName}/actions/jobs/{stuckJobGithubJobId}");
+        if(response.IsSuccessStatusCode)
+        {
+            string content = await response.Content.ReadAsStringAsync();
+            GitHubJob responseObject = JsonSerializer.Deserialize<GitHubJob>(content);
+            
+            return responseObject;
+        }
+        Log.Warning($"Unable to get GH job info for {repoName}/{stuckJobGithubJobId}: [{response.StatusCode}] {response.ReasonPhrase}");
+
+        return null;
+    }
 }
+
+public class GitHubJob
+{
+
+    public int Id { get; set; }
+    public int RunId { get; set; }
+    public string RunUrl { get; set; }
+    public int RunAttempt { get; set; }
+    public string NodeId { get; set; }
+    public string HeadSha { get; set; }
+    public string Url { get; set; }
+    public string HtmlUrl { get; set; }
+    public string Status { get; set; }
+    public string Conclusion { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime StartedAt { get; set; }
+    public DateTime? CompletedAt { get; set; } // Nullable
+    public string Name { get; set; }
+    public List<GitHubJobStep> Steps { get; set; }
+    public string CheckRunUrl { get; set; }
+    public List<string> Labels { get; set; }
+    public int? RunnerId { get; set; } // Nullable
+    public string RunnerName { get; set; } // Nullable
+    public int? RunnerGroupId { get; set; } // Nullable
+    public string RunnerGroupName { get; set; } // Nullable
+    public string WorkflowName { get; set; } // Nullable
+    public string HeadBranch { get; set; } // Nullable
+
+}
+
+public class GitHubJobStep
+    {
+        public string Status { get; set; }
+        public string Conclusion { get; set; }
+        public string Name { get; set; }
+        public int Number { get; set; }
+        public DateTime? StartedAt { get; set; } // Nullable
+        public DateTime? CompletedAt { get; set; } // Nullable
+    }
+
