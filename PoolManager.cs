@@ -400,6 +400,13 @@ public class PoolManager : BackgroundService
                     // VM younger than 6h - not cleaning yet
                     continue;
                 }
+
+                if (runner.LastState == RunnerStatus.Processing)
+                {
+                    // VM still processing - not cleaning
+                    _logger.LogWarning($"Found a long processing runner: {runner.Hostname}");
+                    continue;
+                }
                 
                 // Delete before writing to db.
                 bool _ = githubTarget.Target switch
