@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using GithubActionsOrchestrator.Database;
@@ -49,36 +51,12 @@ public class Program
             .CreateLogger();
 
 
-        string configDir = Environment.GetEnvironmentVariable("CONFIG_DIR") ??
-                           Directory.CreateTempSubdirectory().FullName;
 
-        // Setup pool config
-        string configPath = Path.Combine(configDir, "config.json");
-        if (!File.Exists(configPath))
+        if (!LoadConfiguration())
         {
-            Log.Error($"Unable to read config file at {configPath}");
+            Log.Error("Unable to do initial config load. Aborting.");
             return;
         }
-
-        string configJson = File.ReadAllText(configPath);
-        JsonSerializerOptions options = new()
-        {
-            Converters =
-            {
-                new JsonStringEnumConverter(JsonNamingPolicy.CamelCase)
-            }
-        };
-        Config = JsonSerializer.Deserialize<AutoScalerConfiguration>(configJson, options) ??
-                 throw new Exception("Unable to parse configuration");
-
-        if (string.IsNullOrWhiteSpace(Config.HetznerToken))
-        {
-            Log.Error($"Hetzner cloud token not set in {configPath}");
-            return;
-        }
- 
-
-        Log.Information($"Loaded {Config.TargetConfigs.Count} targets and {Config.Sizes.Count} sizes.");
 
         // Prepare metrics
         using KestrelMetricServer server = new(port: 9000);
@@ -152,6 +130,67 @@ public class Program
         Console.WriteLine("Start listening..."); 
         app.Run(Program.Config.ListenUrl);
     }
+
+    static string GetFileHash(string filePath)
+    {
+        using SHA256 sha256 = SHA256.Create();
+        // Open the file and compute the hash
+        using FileStream stream = File.OpenRead(filePath);
+        byte[] hashBytes = sha256.ComputeHash(stream);
+        // Convert the byte array to a hexadecimal string
+        StringBuilder hashString = new StringBuilder();
+        foreach (byte b in hashBytes)
+        {
+            hashString.Append(b.ToString("x2")); // Convert each byte to a hexadecimal string
+        }
+        return hashString.ToString();
+    }
+
+    
+    public static bool LoadConfiguration()
+    {
+        string configDir = Environment.GetEnvironmentVariable("CONFIG_DIR") ??
+                           Directory.CreateTempSubdirectory().FullName;
+        // Setup pool config
+        string configPath = Path.Combine(configDir, "config.json");
+        if (!File.Exists(configPath))
+        {
+            Log.Error($"Unable to locate config file at {configPath}");
+            return false;
+        }
+        string configFileHash = GetFileHash(configPath);
+
+        if (configFileHash == LoadedConfigHash)
+        {
+            return true;
+        }
+        
+        Log.Information("Loading/refreshing configuration...");
+
+        string configJson = File.ReadAllText(configPath);
+        JsonSerializerOptions options = new()
+        {
+            Converters =
+            {
+                new JsonStringEnumConverter(JsonNamingPolicy.CamelCase)
+            }
+        };
+        var loadedConfig = JsonSerializer.Deserialize<AutoScalerConfiguration>(configJson, options) ??
+                 throw new Exception("Unable to parse configuration");
+
+        if (string.IsNullOrWhiteSpace(loadedConfig.HetznerToken))
+        {
+            Log.Error($"Hetzner cloud token not set in {configPath}");
+            return false;
+        }
+ 
+        Config = loadedConfig;
+        LoadedConfigHash = configFileHash;
+        Log.Information($"Loaded {Config.TargetConfigs.Count} targets and {Config.Sizes.Count} sizes.");
+        return true;
+    }
+
+    public static string LoadedConfigHash { get; set; }
 
     private static async Task<IResult> GithubWebhookHandler(HttpRequest request, [FromServices] CloudController cloud, [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue poolMgr)
     {

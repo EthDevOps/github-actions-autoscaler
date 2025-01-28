@@ -149,9 +149,9 @@ public class CloudController
         bool success = false;
         List<eDataCenter> dataCenters =
         [
+            eDataCenter.nbg1,
             eDataCenter.fsn1,
-            eDataCenter.hel1,
-            eDataCenter.nbg1
+            eDataCenter.hel1
         ];
 
         int ct = 0;

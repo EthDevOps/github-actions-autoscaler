@@ -68,6 +68,9 @@ public class PoolManager : BackgroundService
 
             if (DateTime.UtcNow - crudeStatsTimer > TimeSpan.FromSeconds(statsSeconds))
             {
+                // Update config
+                Program.LoadConfiguration();
+                
                 // Grab some stats
                 await ProcessStats(targetConfig);
                 crudeStatsTimer = DateTime.UtcNow;
@@ -77,6 +80,7 @@ public class PoolManager : BackgroundService
             // check for culling interval
             if (DateTime.UtcNow - crudeTimer > TimeSpan.FromMinutes(cullMinutes))
             {
+                
                 _logger.LogInformation("Cleaning runners...");
                 await CleanUpRunners(targetConfig);
                 await StartPoolRunners(targetConfig);
