@@ -286,7 +286,12 @@ public class PoolManager : BackgroundService
             }
             
             // check job on github
-            GitHubJob ghJob =  await GitHubApi.GetJobInfo(stuckJob.GithubJobId, owner.Name, owner.GitHubToken);
+            GitHubJob ghJob = owner.Target switch
+            {
+                TargetType.Repository => await GitHubApi.GetJobInfoForRepo(stuckJob.GithubJobId, owner.Name, owner.GitHubToken),
+                TargetType.Organization => await GitHubApi.GetJobInfoForOrg(stuckJob.GithubJobId, owner.Name, owner.GitHubToken),
+                _ => throw new ArgumentOutOfRangeException()
+            };
             if (ghJob == null || ghJob.Status != "queued")
             {
                 _logger.LogWarning($"job info for {stuckJob.JobId} not found or job not queued anymore.");

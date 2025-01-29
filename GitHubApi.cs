@@ -157,7 +157,7 @@ public static class GitHubApi {
 
     }
 
-    public static async Task<GitHubJob> GetJobInfo(long stuckJobGithubJobId,string repoName, string orgGitHubToken)
+    public static async Task<GitHubJob> GetJobInfoForOrg(long stuckJobGithubJobId,string repoName, string orgGitHubToken)
     {
         using HttpClient client = new();
         client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
@@ -167,6 +167,27 @@ public static class GitHubApi {
 
         HttpResponseMessage response = await client.GetAsync(
             $"https://api.github.com/orgs/{repoName}/actions/jobs/{stuckJobGithubJobId}");
+        if(response.IsSuccessStatusCode)
+        {
+            string content = await response.Content.ReadAsStringAsync();
+            GitHubJob responseObject = JsonSerializer.Deserialize<GitHubJob>(content);
+            
+            return responseObject;
+        }
+        Log.Warning($"Unable to get GH job info for {repoName}/{stuckJobGithubJobId}: [{response.StatusCode}] {response.ReasonPhrase}");
+
+        return null;
+    }
+    public static async Task<GitHubJob> GetJobInfoForRepo(long stuckJobGithubJobId,string repoName, string orgGitHubToken)
+    {
+        using HttpClient client = new();
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+        client.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
+        client.DefaultRequestHeaders.Authorization = AuthenticationHeaderValue.Parse($"Bearer {orgGitHubToken}");
+        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("hetzner-autoscale", "1"));
+
+        HttpResponseMessage response = await client.GetAsync(
+            $"https://api.github.com/repos/{repoName}/actions/jobs/{stuckJobGithubJobId}");
         if(response.IsSuccessStatusCode)
         {
             string content = await response.Content.ReadAsStringAsync();
