@@ -294,17 +294,28 @@ public class PoolManager : BackgroundService
             };
             if (ghJob == null || ghJob.Status != "queued")
             {
-                _logger.LogWarning($"job info for {stuckJob.JobId} not found or job not queued anymore.");
+                _logger.LogWarning($"job info for {stuckJob.JobId} not found or job not queued anymore on github.");
 
+                if (ghJob == null)
+                {
+                    _logger.LogWarning($"GHjob for {stuckJob.JobId} is null");
+                }
+                else if (ghJob.Status != "queued")
+                {
+                    _logger.LogWarning($"GHjob status for {stuckJob.JobId} is {ghJob.Status}");
+                }
+
+                
+                
                 if (stuckJob.QueueTime + TimeSpan.FromHours(2) > DateTime.UtcNow)
                 {
-                    _logger.LogWarning($"Marking stuck job {stuckJob.GithubJobId} vanished as it's no longer in the GitHub queued state for more than 2h.");
-                    stuckJob.State = JobState.Vanished;
+                    _logger.LogWarning($"Would mark stuck job {stuckJob.GithubJobId} vanished as it's no longer in the GitHub queued state for more than 2h.");
+                    /*stuckJob.State = JobState.Vanished;
                     stuckJob.CompleteTime = DateTime.UtcNow;
-                    await db.SaveChangesAsync();
+                    await db.SaveChangesAsync();*/
                 }
                 
-                continue;
+                //continue;
             }
 
             string runnerToken = owner.Target switch
