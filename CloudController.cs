@@ -69,6 +69,7 @@ public class CloudController
         
         // Select VM size for job - All AMD 
         string vmSize = _configSizes.FirstOrDefault(x => x.Arch == arch && x.Name == size)?.VmType;
+        string vmSizeAlt = _configSizes.FirstOrDefault(x => x.Arch == arch && x.Name == size)?.VmTypeAlternative;
 
         if (string.IsNullOrEmpty(vmSize))
         {
@@ -112,6 +113,7 @@ public class CloudController
         // Grab server type
         List<ServerType> srvTypes = await _client.ServerType.Get();
         long? srvType = srvTypes.FirstOrDefault(x => x.Name == vmSize)?.Id;
+        long? srvTypeAlt = srvTypes.FirstOrDefault(x => x.Name == vmSizeAlt)?.Id;
        
         // Grab SSH keys
         List<SshKey> sshKeys = await _client.SshKey.Get();
@@ -155,10 +157,18 @@ public class CloudController
         ];
 
         int ct = 0;
-
+        bool useAlternative = false;
+        
         while (!success)
         {
-            if (ct == dataCenters.Count)
+
+            if (ct == dataCenters.Count && !useAlternative)
+            {
+                _logger.LogWarning($"Unable to create VM of type {vmSize}. Switching to alt size {vmSizeAlt}...");
+                srvType = srvTypeAlt;
+                ct = 0;
+            }
+            else if (ct == dataCenters.Count)
             {
                 throw new Exception($"Unable to find any htz DC able to host {name} of size {size}");
             }
