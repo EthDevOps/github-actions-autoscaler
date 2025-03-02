@@ -310,12 +310,12 @@ public class PoolManager : BackgroundService
                 if (stuckJob.QueueTime + TimeSpan.FromHours(2) > DateTime.UtcNow)
                 {
                     _logger.LogWarning($"Would mark stuck job {stuckJob.GithubJobId} vanished as it's no longer in the GitHub queued state for more than 2h.");
-                    /*stuckJob.State = JobState.Vanished;
+                    stuckJob.State = JobState.Vanished;
                     stuckJob.CompleteTime = DateTime.UtcNow;
-                    await db.SaveChangesAsync();*/
+                    await db.SaveChangesAsync();
                 }
                 
-                //continue;
+                continue;
             }
 
             string runnerToken = owner.Target switch
