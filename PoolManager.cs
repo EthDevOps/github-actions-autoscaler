@@ -500,7 +500,23 @@ public class PoolManager : BackgroundService
                     continue;
                 }
 
-                if (runner.Lifecycle.Any(x => x.Status == RunnerStatus.DeletionQueued))
+                if (runner.Lifecycle.Count(x => x.Status == RunnerStatus.DeletionQueued) > 10)
+                {
+                    runner.Lifecycle.Add(new()
+                    {
+                        Status = RunnerStatus.DeletionQueued,
+                        Event = "Still around after going in deletion queue. trying again...",
+                        EventTimeUtc = DateTime.UtcNow
+                    });
+                    await db.SaveChangesAsync();
+                    _queues.DeleteTasks.Enqueue(new()
+                    {
+                        RunnerDbId = runner.RunnerId,
+                        ServerId = htzSrv.Id
+                    });
+
+                }
+                else if (runner.Lifecycle.Any(x => x.Status == RunnerStatus.DeletionQueued))
                 {
                     runner.Lifecycle.Add(new()
                     {
