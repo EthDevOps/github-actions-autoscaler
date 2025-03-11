@@ -286,12 +286,7 @@ public class PoolManager : BackgroundService
             }
             
             // check job on github
-            GitHubJob ghJob = owner.Target switch
-            {
-                TargetType.Repository => await GitHubApi.GetJobInfoForRepo(stuckJob.GithubJobId, owner.Name, owner.GitHubToken),
-                TargetType.Organization => await GitHubApi.GetJobInfoForOrg(stuckJob.GithubJobId, owner.Name, owner.GitHubToken),
-                _ => throw new ArgumentOutOfRangeException()
-            };
+            GitHubJob ghJob = await GitHubApi.GetJobInfoForRepo(stuckJob.GithubJobId, stuckJob.Repository , owner.GitHubToken);
             if (ghJob == null || ghJob.Status != "queued")
             {
                 _logger.LogWarning($"job info for {stuckJob.JobId} not found or job not queued anymore on github.");
@@ -304,12 +299,10 @@ public class PoolManager : BackgroundService
                 {
                     _logger.LogWarning($"GHjob status for {stuckJob.JobId} is {ghJob.Status}");
                 }
-
-                
                 
                 if (stuckJob.QueueTime + TimeSpan.FromHours(2) > DateTime.UtcNow)
                 {
-                    _logger.LogWarning($"Would mark stuck job {stuckJob.GithubJobId} vanished as it's no longer in the GitHub queued state for more than 2h.");
+                    _logger.LogWarning($"Marking stuck job {stuckJob.GithubJobId} vanished as it's no longer in the GitHub queued state for more than 2h.");
                     stuckJob.State = JobState.Vanished;
                     stuckJob.CompleteTime = DateTime.UtcNow;
                     await db.SaveChangesAsync();
