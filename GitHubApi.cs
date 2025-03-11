@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using GithubActionsOrchestrator.GitHub;
 using Npgsql.Replication;
 using Serilog;
@@ -157,7 +158,7 @@ public static class GitHubApi {
 
     }
 
-    public static async Task<GitHubJob> GetJobInfoForOrg(long stuckJobGithubJobId,string repoName, string orgGitHubToken)
+    public static async Task<GitHubApiWorkflowRun> GetJobInfoForOrg(long stuckJobGithubJobId,string repoName, string orgGitHubToken)
     {
         using HttpClient client = new();
         client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
@@ -170,7 +171,7 @@ public static class GitHubApi {
         if(response.IsSuccessStatusCode)
         {
             string content = await response.Content.ReadAsStringAsync();
-            GitHubJob responseObject = JsonSerializer.Deserialize<GitHubJob>(content);
+            GitHubApiWorkflowRun responseObject = JsonSerializer.Deserialize<GitHubApiWorkflowRun>(content);
             
             return responseObject;
         }
@@ -178,7 +179,7 @@ public static class GitHubApi {
 
         return null;
     }
-    public static async Task<GitHubJob> GetJobInfoForRepo(long stuckJobGithubJobId,string repoName, string orgGitHubToken)
+    public static async Task<GitHubApiWorkflowRun> GetJobInfoForRepo(long stuckJobGithubJobId,string repoName, string orgGitHubToken)
     {
         using HttpClient client = new();
         client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
@@ -191,7 +192,7 @@ public static class GitHubApi {
         if(response.IsSuccessStatusCode)
         {
             string content = await response.Content.ReadAsStringAsync();
-            GitHubJob responseObject = JsonSerializer.Deserialize<GitHubJob>(content);
+            GitHubApiWorkflowRun responseObject = JsonSerializer.Deserialize<GitHubApiWorkflowRun>(content);
             
             return responseObject;
         }
@@ -201,42 +202,95 @@ public static class GitHubApi {
     }
 }
 
-public class GitHubJob
+public class GitHubApiWorkflowJob
 {
-
-    public int Id { get; set; }
-    public int RunId { get; set; }
-    public string RunUrl { get; set; }
-    public int RunAttempt { get; set; }
-    public string NodeId { get; set; }
-    public string HeadSha { get; set; }
-    public string Url { get; set; }
-    public string HtmlUrl { get; set; }
-    public string Status { get; set; }
-    public string Conclusion { get; set; }
-    public DateTime CreatedAt { get; set; }
-    public DateTime StartedAt { get; set; }
-    public DateTime? CompletedAt { get; set; } // Nullable
+    [JsonPropertyName("name")]
     public string Name { get; set; }
-    public List<GitHubJobStep> Steps { get; set; }
-    public string CheckRunUrl { get; set; }
-    public List<string> Labels { get; set; }
-    public int? RunnerId { get; set; } // Nullable
-    public string RunnerName { get; set; } // Nullable
-    public int? RunnerGroupId { get; set; } // Nullable
-    public string RunnerGroupName { get; set; } // Nullable
-    public string WorkflowName { get; set; } // Nullable
-    public string HeadBranch { get; set; } // Nullable
 
+    [JsonPropertyName("status")]
+    public string Status { get; set; }
+
+    [JsonPropertyName("conclusion")]
+    public string Conclusion { get; set; }
+
+    [JsonPropertyName("number")]
+    public int? Number { get; set; }
+
+    [JsonPropertyName("started_at")]
+    public DateTime? StartedAt { get; set; }
+
+    [JsonPropertyName("completed_at")]
+    public DateTime? CompletedAt { get; set; }
 }
 
-public class GitHubJobStep
-    {
-        public string Status { get; set; }
-        public string Conclusion { get; set; }
-        public string Name { get; set; }
-        public int Number { get; set; }
-        public DateTime? StartedAt { get; set; } // Nullable
-        public DateTime? CompletedAt { get; set; } // Nullable
-    }
+public class GitHubApiWorkflowRun
+{
+    [JsonPropertyName("id")]
+    public long? Id { get; set; }
 
+    [JsonPropertyName("run_id")]
+    public long? RunId { get; set; }
+
+    [JsonPropertyName("workflow_name")]
+    public string WorkflowName { get; set; }
+
+    [JsonPropertyName("head_branch")]
+    public string HeadBranch { get; set; }
+
+    [JsonPropertyName("run_url")]
+    public string RunUrl { get; set; }
+
+    [JsonPropertyName("run_attempt")]
+    public int? RunAttempt { get; set; }
+
+    [JsonPropertyName("node_id")]
+    public string NodeId { get; set; }
+
+    [JsonPropertyName("head_sha")]
+    public string HeadSha { get; set; }
+
+    [JsonPropertyName("url")]
+    public string Url { get; set; }
+
+    [JsonPropertyName("html_url")]
+    public string HtmlUrl { get; set; }
+
+    [JsonPropertyName("status")]
+    public string Status { get; set; }
+
+    [JsonPropertyName("conclusion")]
+    public string Conclusion { get; set; }
+
+    [JsonPropertyName("created_at")]
+    public DateTime? CreatedAt { get; set; }
+
+    [JsonPropertyName("started_at")]
+    public DateTime? StartedAt { get; set; }
+
+    [JsonPropertyName("completed_at")]
+    public DateTime? CompletedAt { get; set; }
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; }
+
+    [JsonPropertyName("steps")]
+    public List<GitHubApiWorkflowJob> Steps { get; set; }
+
+    [JsonPropertyName("check_run_url")]
+    public string CheckRunUrl { get; set; }
+
+    [JsonPropertyName("labels")]
+    public List<string> Labels { get; set; }
+
+    [JsonPropertyName("runner_id")]
+    public long? RunnerId { get; set; }
+
+    [JsonPropertyName("runner_name")]
+    public string RunnerName { get; set; }
+
+    [JsonPropertyName("runner_group_id")]
+    public int? RunnerGroupId { get; set; }
+
+    [JsonPropertyName("runner_group_name")]
+    public string RunnerGroupName { get; set; }
+}

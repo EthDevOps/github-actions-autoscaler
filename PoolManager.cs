@@ -59,7 +59,7 @@ public class PoolManager : BackgroundService
        
         DateTime crudeTimer = DateTime.UtcNow;
         DateTime crudeStatsTimer = DateTime.UtcNow;
-        int cullMinutes = 5;
+        int cullMinutes = 1;
         int statsSeconds = 10;
         
         while (!stoppingToken.IsCancellationRequested)
@@ -286,7 +286,7 @@ public class PoolManager : BackgroundService
             }
             
             // check job on github
-            GitHubJob ghJob = await GitHubApi.GetJobInfoForRepo(stuckJob.GithubJobId, stuckJob.Repository , owner.GitHubToken);
+            GitHubApiWorkflowRun ghJob = await GitHubApi.GetJobInfoForRepo(stuckJob.GithubJobId, stuckJob.Repository , owner.GitHubToken);
             if (ghJob == null || ghJob.Status != "queued")
             {
                 _logger.LogWarning($"job info for {stuckJob.JobId} not found or job not queued anymore on github.");
