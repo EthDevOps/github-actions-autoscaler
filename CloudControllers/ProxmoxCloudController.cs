@@ -53,22 +53,13 @@ public class ProxmoxCloudController : BaseCloudController, ICloudController
         // Get next available VMID
 
         await _semaphore.WaitAsync();
-
         string macaddress = string.Empty;
-        
-        
-        
         int newVmId;
+        
         try
         {
-            
             // Select node
             var resources = (await client.Cluster.Resources.GetAsync("vm")).ToList();
-            /*var vmCountByNode = resources
-                .Where(x => x.Name.StartsWith(Program.Config.RunnerPrefix))
-                .GroupBy(x => x.Node)
-                .Select(x => new { Node = x.Key, Count = x.Count()});*/
-
             var availableNodes = resources.Select(x => x.Node).Distinct().ToList();
             
             var vmCountByNode = availableNodes

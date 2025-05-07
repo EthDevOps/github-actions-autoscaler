@@ -188,9 +188,9 @@ public class PoolManager : BackgroundService
             {
                 CspRunnerCount.Labels(cc.CloudIdentifier).Set(await cc.GetServerCountFromCsp());
             }
-            catch
+            catch(Exception ex)
             {
-                _logger.LogWarning($"Unable to get runner count from CSP {cc.CloudIdentifier}");
+                _logger.LogWarning($"Unable to get runner count from CSP {cc.CloudIdentifier}: {ex.GetFullExceptionDetails()}");
             }
         }
         
@@ -723,7 +723,7 @@ public class PoolManager : BackgroundService
         }
         
         var cc = _cc.First(x => x.CloudIdentifier == selectedProvider.Cloud);
-        
+
         try
         {
             string targetName = rt.TargetType switch
@@ -732,34 +732,57 @@ public class PoolManager : BackgroundService
                 TargetType.Organization => runner.Owner,
                 _ => throw new ArgumentOutOfRangeException()
             };
-            
-            
-            Machine newRunner = await cc.CreateNewRunner(runner.Arch, runner.Size, rt.RunnerToken, targetName, runner.IsCustom, runner.Profile);
-            _logger.LogInformation($"New Runner {newRunner.Name} [{runner.Size} on {runner.Arch}] entering pool for {targetName}.");
-            MachineCreatedCount.Labels(runner.Owner, runner.Size).Inc();
 
-            runner.Hostname = newRunner.Name;
-            runner.IsOnline = true;
-            runner.CloudServerId = newRunner.Id;
-            runner.IPv4 = newRunner.Ipv4;
-            runner.Cloud = cc.CloudIdentifier;
-            runner.ProvisionId = newRunner.ProvisionId;
-            runner.ProvisionPayload = newRunner.ProvisionPayload;
-            
-            
-            runner.Lifecycle.Add(new RunnerLifecycle
+
+            Machine newRunner;
+            int retryAttempt = 0;
+            const int maxRetries = 1;
+            const int retryDelayMs = 1000; // 1 second delay between retries
+
+            while (retryAttempt <= maxRetries)
             {
-                Status = RunnerStatus.Created,
-                EventTimeUtc = DateTime.UtcNow,
-                Event = $"New Runner {newRunner.Name} [{runner.Size} on {runner.Arch}] entering pool for {targetName}."
-            });
+
+                try
+                {
+                    newRunner = await cc.CreateNewRunner(runner.Arch, runner.Size, rt.RunnerToken, targetName, runner.IsCustom, runner.Profile);
+                    _logger.LogInformation($"New Runner {newRunner.Name} [{runner.Size} on {runner.Arch}] entering pool for {targetName}.");
+                    MachineCreatedCount.Labels(runner.Owner, runner.Size).Inc();
+
+                    runner.Hostname = newRunner.Name;
+                    runner.IsOnline = true;
+                    runner.CloudServerId = newRunner.Id;
+                    runner.IPv4 = newRunner.Ipv4;
+                    runner.Cloud = cc.CloudIdentifier;
+                    runner.ProvisionId = newRunner.ProvisionId;
+                    runner.ProvisionPayload = newRunner.ProvisionPayload;
+                    runner.Lifecycle.Add(new RunnerLifecycle
+                    {
+                        Status = RunnerStatus.Created,
+                        EventTimeUtc = DateTime.UtcNow,
+                        Event = $"New Runner {newRunner.Name} [{runner.Size} on {runner.Arch}] entering pool for {targetName}."
+                    });
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    if (retryAttempt == maxRetries)
+                    {
+                        _logger.LogError(ex, $"Failed to create runner after {maxRetries + 1} attempts");
+                        throw; // Re-throw the exception after all retries are exhausted
+                    }
+        
+                    _logger.LogWarning(ex, $"Failed to create runner (attempt {retryAttempt + 1}/{maxRetries + 1}). Retrying...");
+                    await Task.Delay(retryDelayMs);
+                    retryAttempt++; 
+                }
+            }
             await db.SaveChangesAsync();
             
             return true;
         }
         catch (Exception ex)
         {
-            _logger.LogError($"Unable to create runner [{runner.Size} on {runner.Arch} | Retry: {rt.RetryCount}]: {ex.Message}");
+            _logger.LogError($"Unable to create runner [{runner.Size} on {runner.Arch} | Retry: {rt.RetryCount}]: {ex.GetFullExceptionDetails()}");
             runner.Lifecycle.Add(new RunnerLifecycle
             {
                 Status = RunnerStatus.Failure,
@@ -789,7 +812,7 @@ public class PoolManager : BackgroundService
             {
                 Cloud = cc.CloudIdentifier,
                 Size = runner.Size,
-                UnbanTime = DateTime.UtcNow + TimeSpan.FromMinutes(30) 
+                UnbanTime = DateTime.UtcNow + TimeSpan.FromMinutes(10) 
             });
 
             return false;
