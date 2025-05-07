@@ -141,7 +141,7 @@ public class ProxmoxCloudController : BaseCloudController, ICloudController
             }
 
             await client.Nodes[selectedNode].Qemu[newVmId].Config.UpdateVm(
-                vcpus: cores,
+                cores: cores,
                 memory: (memory * 1024).ToString()
             );
 
