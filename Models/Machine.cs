@@ -15,4 +15,6 @@ public class Machine
     public string Arch { get; set; }
     public string Profile { get; set; }
     public bool IsCustom { get; set; }
+    public string ProvisionId { get; set; }
+    public string ProvisionPayload { get; set; }
 }

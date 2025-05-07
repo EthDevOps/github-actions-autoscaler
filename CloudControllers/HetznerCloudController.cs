@@ -1,8 +1,5 @@
-using System.Collections.Concurrent;
 using System.Text;
-using System.Text.Json;
 using GithubActionsOrchestrator.Database;
-using GithubActionsOrchestrator.GitHub;
 using GithubActionsOrchestrator.Models;
 using HetznerCloudApi;
 using HetznerCloudApi.Object.Image;
@@ -11,73 +8,34 @@ using HetznerCloudApi.Object.ServerType;
 using HetznerCloudApi.Object.SshKey;
 using HetznerCloudApi.Object.Universal;
 using Microsoft.EntityFrameworkCore;
-using RandomFriendlyNameGenerator;
 
-namespace GithubActionsOrchestrator;
+namespace GithubActionsOrchestrator.CloudControllers;
 
-public class CloudController
+public class HetznerCloudController : BaseCloudController, ICloudController
 {
     private readonly HetznerCloudClient _client;
     private readonly ILogger _logger;
-
     private readonly List<MachineSize> _configSizes;
-    private readonly string _provisionBaseUrl;
-    private readonly string _metricUser;
-    private readonly string _metricPassword;
-
-    public CloudController(ILogger<CloudController> logger,
+    
+    public HetznerCloudController(ILogger<HetznerCloudController> logger,
         string hetznerCloudToken,
         List<MachineSize> configSizes,
         string provisionScriptBaseUrl,
         string metricUser,
-        string metricPassword)
+        string metricPassword): base(logger, configSizes, provisionScriptBaseUrl, metricUser, metricPassword)
     {
         _configSizes = configSizes;
         _client = new(hetznerCloudToken);
         _logger = logger;
-        _provisionBaseUrl = provisionScriptBaseUrl;
-        _metricUser = metricUser;
-        _metricPassword = metricPassword;
         
-        _logger.LogInformation("Controller init done.");
+        _logger.LogInformation("Hetzner Cloud Controller init done.");
     }
 
-    private async Task<string> GenerateName()
-    {
-        var db = new ActionsRunnerContext();
-
-        string name = string.Empty;
-        bool nameCollision = false;
-        do
-        {
-            if (nameCollision)
-            {
-                _logger.LogWarning($"Name collision detected: {name}");
-            }
-            
-            // Name duplicate detection. Generate names as long as there is no duplicate found
-            name = $"{Program.Config.RunnerPrefix}-{NameGenerator.Identifiers.Get(IdentifierTemplate.AnyThreeComponents,  NameOrderingStyle.BobTheBuilderStyle, separator: "-")}".ToLower().Replace(' ', '-');
-
-            nameCollision = true;
-        } while (await db.Runners.AnyAsync(x => x.Hostname == name));
-
-        return name;
-    }
-    
     public async Task<Machine> CreateNewRunner(string arch, string size, string runnerToken, string targetName, bool isCustom = false, string profileName = "default")
     {
         
-        // Select VM size for job - All AMD 
-        string vmSize = _configSizes.FirstOrDefault(x => x.Arch == arch && x.Name == size)?.VmType;
-        string vmSizeAlt = _configSizes.FirstOrDefault(x => x.Arch == arch && x.Name == size)?.VmTypeAlternative;
-
-        if (string.IsNullOrEmpty(vmSize))
-        {
-            throw new Exception($"Unknown arch and size combination [{arch}/{size}]");
-        }
-
-        // Build image name
-
+        MachineType machineType = SelectMachineType(arch, size, CloudIdentifier, out MachineType machineTypeAlt);
+        
         // Load profile info
         RunnerProfile profile = isCustom ? 
             Program.Config.Profiles.FirstOrDefault(x => x.Name == profileName) :
@@ -112,8 +70,7 @@ public class CloudController
         
         // Grab server type
         List<ServerType> srvTypes = await _client.ServerType.Get();
-        long? srvType = srvTypes.FirstOrDefault(x => x.Name == vmSize)?.Id;
-        long? srvTypeAlt = srvTypes.FirstOrDefault(x => x.Name == vmSizeAlt)?.Id;
+        long? srvType = srvTypes.FirstOrDefault(x => x.Name == machineType.VmType)?.Id;
        
         // Grab SSH keys
         List<SshKey> sshKeys = await _client.SshKey.Get();
@@ -123,30 +80,8 @@ public class CloudController
         var networks = await _client.Network.Get();
         
         // Create new server
-        string runnerVersion = Program.Config.GithubAgentVersion;
-        string provisionVersion = $"v{profile.ScriptVersion}";
-        string customEnv = isCustom ? "1" : "0";
+        string cloudInitcontent = GenerateCloudInit(targetName, runnerToken, size, profile, isCustom, arch);
         
-        string cloudInitcontent = new StringBuilder()
-            .AppendLine("#cloud-config")
-            .AppendLine("write_files:")
-            .AppendLine("  - path: /data/config.env")
-            .AppendLine("    content: |")
-            .AppendLine($"      export GH_VERSION='{runnerVersion}'")
-            .AppendLine($"      export ORG_NAME='{targetName}'")
-            .AppendLine($"      export GH_TOKEN='{runnerToken}'")
-            .AppendLine($"      export RUNNER_SIZE='{size}'")
-            .AppendLine($"      export METRIC_USER='{_metricUser}'")
-            .AppendLine($"      export METRIC_PASS='{_metricPassword}'")
-            .AppendLine($"      export GH_PROFILE_NAME='{profile.Name}'")
-            .AppendLine($"      export GH_IS_CUSTOM='{customEnv}'")
-            .AppendLine($"      export RUNNER_PREFIX='{Program.Config.RunnerPrefix}'")
-            .AppendLine($"      export CONTROLLER_URL='{Program.Config.ControllerUrl}'")
-            .AppendLine("runcmd:")
-            .AppendLine($"  - [ sh, -xc, 'curl -fsSL {_provisionBaseUrl}/provision.{profile.ScriptName}.{arch}.{provisionVersion}.sh -o /data/provision.sh']")
-            .AppendLine("  - [ sh, -xc, 'bash /data/provision.sh']")
-            .ToString();
-
         Server newSrv = null;
         bool success = false;
         List<eDataCenter> dataCenters =
@@ -157,19 +92,22 @@ public class CloudController
         ];
 
         int ct = 0;
-        bool useAlternative = false;
-        
         while (!success)
         {
-
-            if (ct == dataCenters.Count && !useAlternative)
+            if (ct == dataCenters.Count && machineTypeAlt != null)
             {
-                _logger.LogWarning($"Unable to create VM of type {vmSize}. Switching to alt size {vmSizeAlt}...");
-                srvType = srvTypeAlt;
+                long? srvTypeAltId = srvTypes.FirstOrDefault(x => x.Name == machineTypeAlt.VmType)?.Id;
+                _logger.LogWarning($"Unable to create VM of type {machineType.VmType}. Switching to alt size {machineTypeAlt.VmType}...");
+                srvType = srvTypeAltId;
                 ct = 0;
             }
             else if (ct == dataCenters.Count)
             {
+                // Select an alternative size
+                if (machineTypeAlt == null)
+                {
+                    _logger.LogWarning($"No alternative VM types found for {machineType.VmType}");
+                }
                 throw new Exception($"Unable to find any htz DC able to host {name} of size {size}");
             }
             try
@@ -232,14 +170,36 @@ public class CloudController
        
     }
 
-    public async Task<List<Server>> GetAllServersFromCsp()
+    public async Task<List<CspServer>> GetAllServersFromCsp()
     {
         List<Server> srvs = await _client.Server.Get();
-        return srvs.Where(x =>x.Name.StartsWith(Program.Config.RunnerPrefix)).ToList();
+        return srvs.Where(x =>x.Name.StartsWith(Program.Config.RunnerPrefix)).Select(x => new CspServer
+        {
+            Id = x.Id,
+            Name = x.Name,
+            CreatedAt = x.Created
+        }).ToList();
     }
 
     public async Task<int> GetServerCountFromCsp()
     {
         return (await GetAllServersFromCsp()).Count;
+    }
+
+    public string CloudIdentifier => "htz";
+}
+
+public class UnsupportedMachineTypeException : Exception
+{
+    public UnsupportedMachineTypeException()
+    {
+    }
+
+    public UnsupportedMachineTypeException(string message) : base(message)
+    {
+    }
+
+    public UnsupportedMachineTypeException(string message, Exception inner) : base(message, inner)
+    {
     }
 }

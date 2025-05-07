@@ -1,6 +1,7 @@
 using GithubActionsOrchestrator.Database;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Npgsql.Internal;
 
 namespace GithubActionsOrchestrator;
 [Route("/api")]
@@ -60,5 +61,29 @@ public class ApiController : Controller
         return Results.Json(potentialRunners);
     }
     
+    [Route("provision/{provisionId}")]
+    public async Task<IResult> GetProvisionScript(string provisionId,[FromHeader(Name = "X-API-KEY")] string apiKey)
+    {
+        /*// Check if API key is provided
+        if (string.IsNullOrEmpty(apiKey))
+        {
+            return Results.Unauthorized();
+        }
+    
+        // Validate API key (replace with your actual validation logic)
+        if (apiKey != Program.Config.ApiKey)
+        {
+            return Results.Unauthorized();
+        }*/
+ 
+        var db = new ActionsRunnerContext();
+        var runner = await db.Runners.Where(x => x.ProvisionId.ToLower() == provisionId).FirstOrDefaultAsync();
+        if(runner == null)
+            return Results.NotFound();
+        
+        return Results.Content(runner.ProvisionPayload);
+
+    }
+
     
 }

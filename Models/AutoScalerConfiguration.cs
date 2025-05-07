@@ -19,4 +19,9 @@ public class AutoScalerConfiguration
     public string DbConnectionString { get; set; }
     public string ListenUrl { get; set; }
     public string GithubAgentVersion { get; set; }
+    public string PvePassword { get; set; }
+    public string PveUsername { get; set; }
+    public string PveHost { get; set; }
+    public string ApiKey { get; set; }
+    public int PveTemplate { get; set; }
 }

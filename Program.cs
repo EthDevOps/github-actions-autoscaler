@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using GithubActionsOrchestrator.CloudControllers;
 using GithubActionsOrchestrator.Database;
 using GithubActionsOrchestrator.GitHub;
 using GithubActionsOrchestrator.Models;
@@ -108,11 +109,17 @@ public class Program
              options.JsonSerializerOptions.ReferenceHandler = ReferenceHandler.IgnoreCycles;
          });
 
-        builder.Services.AddSingleton(svc =>
+        builder.Services.AddSingleton<ICloudController, HetznerCloudController>(svc =>
         {
-            ILogger<CloudController> logger = svc.GetRequiredService<ILogger<CloudController>>();
-            return new CloudController(logger, Config.HetznerToken, Config.Sizes,
+            ILogger<HetznerCloudController> logger = svc.GetRequiredService<ILogger<HetznerCloudController>>();
+            return new HetznerCloudController(logger, Config.HetznerToken, Config.Sizes,
                 Config.ProvisionScriptBaseUrl, Config.MetricUser, Config.MetricPassword);
+        });
+        
+        builder.Services.AddSingleton<ICloudController, ProxmoxCloudController>(svc =>
+        {
+            ILogger<ProxmoxCloudController> logger = svc.GetRequiredService<ILogger<ProxmoxCloudController>>();
+            return new ProxmoxCloudController(logger, Config.Sizes, Config.ProvisionScriptBaseUrl, Config.MetricUser, Config.MetricPassword, Config.PveHost, Config.PveUsername, Config.PvePassword, Config.PveTemplate);
         });
 
         WebApplication app = builder.Build();
@@ -192,7 +199,7 @@ public class Program
 
     public static string LoadedConfigHash { get; set; }
 
-    private static async Task<IResult> GithubWebhookHandler(HttpRequest request, [FromServices] CloudController cloud, [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue poolMgr)
+    private static async Task<IResult> GithubWebhookHandler(HttpRequest request, [FromServices] HetznerCloudController cloud, [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue poolMgr)
     {
         // Verify webhook HMAC - TODO
 
@@ -314,7 +321,7 @@ public class Program
         return Results.StatusCode(201);
     }
 
-    private static async Task<IResult> RunnerStateReportHandler(HttpRequest request, [FromServices] CloudController cloud, [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue runnerQueue, [FromQuery] string hostname, [FromQuery] string state)
+    private static async Task<IResult> RunnerStateReportHandler(HttpRequest request, [FromServices] HetznerCloudController cloud, [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue runnerQueue, [FromQuery] string hostname, [FromQuery] string state)
     {
         var db = new ActionsRunnerContext();
         var runner = await db.Runners.Include(x => x.Lifecycle).Include(x => x.Job).FirstOrDefaultAsync(x => x.Hostname == hostname);
@@ -400,7 +407,7 @@ public class Program
         return Results.StatusCode(201);
     }
 
-    private static async Task<IResult> AddRunnerManuallyHandler(HttpRequest request, [FromServices] CloudController cloud, [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue runnerQueue, [FromServices] RunnerQueue poolMgr)
+    private static async Task<IResult> AddRunnerManuallyHandler(HttpRequest request, [FromServices] HetznerCloudController cloud, [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue runnerQueue, [FromServices] RunnerQueue poolMgr)
     {
         // Read webhook from github
         JsonDocument json = await request.ReadFromJsonAsync<JsonDocument>();

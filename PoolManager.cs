@@ -1,3 +1,5 @@
+using System.Reflection.Metadata.Ecma335;
+using GithubActionsOrchestrator.CloudControllers;
 using GithubActionsOrchestrator.Database;
 using GithubActionsOrchestrator.GitHub;
 using GithubActionsOrchestrator.Models;
@@ -9,7 +11,7 @@ namespace GithubActionsOrchestrator;
 
 public class PoolManager : BackgroundService
 {
-    private readonly CloudController _cc;
+    private readonly List<ICloudController> _cc;
     private readonly ILogger<PoolManager> _logger;
     private static readonly Counter MachineCreatedCount = Metrics
         .CreateCounter("github_autoscaler_machines_created", "Number of created machines", labelNames: ["org","size"]);
@@ -34,10 +36,12 @@ public class PoolManager : BackgroundService
 
     private readonly RunnerQueue _queues;
 
+    private List<CloudBan> _bannedClouds = new List<CloudBan>();
 
-    public PoolManager(CloudController cc, ILogger<PoolManager> logger, RunnerQueue queues)
+    public PoolManager(IEnumerable<ICloudController> cc, ILogger<PoolManager> logger, RunnerQueue queues)
     {
-        _cc = cc;
+        List<ICloudController> cloudControllers = cc.ToList();
+        _cc = cloudControllers;
         _logger = logger;
         _queues = queues;
     }
@@ -82,9 +86,22 @@ public class PoolManager : BackgroundService
             {
                 
                 _logger.LogInformation("Cleaning runners...");
+                
+                await CheckForStuckRunners(targetConfig);
+                
                 await CleanUpRunners(targetConfig);
                 await StartPoolRunners(targetConfig);
                 await CheckForStuckJobs(targetConfig);
+
+                foreach (var ban in _bannedClouds.ToList())
+                {
+                    if (ban.UnbanTime < DateTime.UtcNow)
+                    {
+                        _logger.LogInformation($"Unbanned {ban.Size} on {ban.Cloud}...");
+                        _bannedClouds.Remove(ban);
+                    }
+                }
+                
                 crudeTimer = DateTime.UtcNow;
             }
 
@@ -125,12 +142,58 @@ public class PoolManager : BackgroundService
         }
     }
 
+    private async Task CheckForStuckRunners(List<GithubTargetConfiguration> targetConfig)
+    {
+        // check the database for runners that are in "created" state for more then 5 minutes.
+        
+        var db = new ActionsRunnerContext();
+        foreach(var stuckRunner in db.Runners.Include(x => x.Lifecycle).AsEnumerable().Where(x => x.LastState == RunnerStatus.Created))
+        {
+
+            // check if runner is old enough to be stuck
+            if (stuckRunner.CreateTime + TimeSpan.FromMinutes(5) > DateTime.UtcNow)
+                continue;
+            
+            // Note stuckness in lifecycle and add runner to deletion queue
+            stuckRunner.Lifecycle.Add(new RunnerLifecycle
+            {
+                Event = "Stuck in provisioning. Killing.",
+                EventTimeUtc = DateTime.UtcNow,
+                Status = RunnerStatus.Failure
+            });
+           
+            _queues.DeleteTasks.Enqueue(new DeleteRunnerTask
+            {
+                ServerId = stuckRunner.CloudServerId,
+                RunnerDbId = stuckRunner.RunnerId
+            });
+            
+            _logger.LogWarning($"Killing Runner stuck in provisioning: {stuckRunner.Hostname} on {stuckRunner.Cloud}");
+            
+        }
+        
+        // write to DB
+        await db.SaveChangesAsync();
+    }
+
     private async Task ProcessStats(List<GithubTargetConfiguration> targetConfig)
     {
         CreateQueueSize.Set(_queues.CreateTasks.Count);
         DeleteQueueSize.Set(_queues.DeleteTasks.Count);
         ProvisionQueueSize.Set(_queues.CreatedRunners.Count);
-        CspRunnerCount.Labels("htz").Set(await _cc.GetServerCountFromCsp()); 
+        
+        foreach(ICloudController cc in _cc)
+        {
+            try
+            {
+                CspRunnerCount.Labels(cc.CloudIdentifier).Set(await cc.GetServerCountFromCsp());
+            }
+            catch
+            {
+                _logger.LogWarning($"Unable to get runner count from CSP {cc.CloudIdentifier}");
+            }
+        }
+        
         
         // Grab job state counts
         var db = new ActionsRunnerContext();
@@ -473,79 +536,109 @@ public class PoolManager : BackgroundService
         }
         
         // Remove every VM that's not in the github registered runners
-        try
+        foreach (ICloudController cc in _cc)
         {
-            List<Server> remainingHtzServer = await _cc.GetAllServersFromCsp();
-            foreach (Server htzSrv in remainingHtzServer)
+            try
             {
-                if (registeredServerNames.Contains(htzSrv.Name))
+                List<CspServer> remainingServers = await cc.GetAllServersFromCsp();
+                foreach (CspServer cspServer in remainingServers)
                 {
-                    // If we know the server in github, skip
-                    continue;
-                }
-
-                _logger.LogInformation($"{htzSrv.Name} is a candidate to be killed from Hetzner");
-
-                var runner = await db.Runners.Include(x => x.Lifecycle).FirstOrDefaultAsync(x => x.CloudServerId == htzSrv.Id);
-                if (runner == null)
-                {
-                    _logger.LogInformation($"{htzSrv.Name} is not found in the database");
-                    continue;
-                }
-
-                if (runner.Lifecycle.Count(x => x.Status == RunnerStatus.DeletionQueued) > 10)
-                {
-                    runner.Lifecycle.Add(new()
+                    if (registeredServerNames.Contains(cspServer.Name))
                     {
-                        Status = RunnerStatus.DeletionQueued,
-                        Event = "Still around after going in deletion queue. trying again...",
-                        EventTimeUtc = DateTime.UtcNow
-                    });
-                    await db.SaveChangesAsync();
-                    _queues.DeleteTasks.Enqueue(new()
-                    {
-                        RunnerDbId = runner.RunnerId,
-                        ServerId = htzSrv.Id
-                    });
+                        // If we know the server in github, skip
+                        continue;
+                    }
 
-                }
-                else if (runner.Lifecycle.Any(x => x.Status == RunnerStatus.DeletionQueued))
-                {
-                    runner.Lifecycle.Add(new()
+                    if (cspServer.CreatedAt + TimeSpan.FromMinutes(5) > DateTime.UtcNow)
                     {
-                        Status = RunnerStatus.DeletionQueued,
-                        Event = "Don't queue deletion due to Github registration. Runner already queued for deletion.",
-                        EventTimeUtc = DateTime.UtcNow
-                    });
-                    await db.SaveChangesAsync();
+                        // fresh runner. don't act on it yet
+                        continue;
+                    }
 
-                }
-                else if ((runner.LastState >= RunnerStatus.Provisioned && DateTime.UtcNow - runner.LastStateTime > TimeSpan.FromMinutes(5)) ||
-                         (runner.LastState != RunnerStatus.Processing && DateTime.UtcNow - htzSrv.Created.ToUniversalTime() > TimeSpan.FromMinutes(40)))
-                {
-                    _logger.LogInformation($"Removing VM that is not in any GitHub registration: {htzSrv.Name} created at {htzSrv.Created:u}");
-                    runner.IsOnline = false;
-                    runner.Lifecycle.Add(new()
+                    _logger.LogInformation($"{cspServer.Name} is a candidate to be killed from {cc.CloudIdentifier}");
+
+                    var runner = await db.Runners.Include(x => x.Lifecycle).FirstOrDefaultAsync(x => x.Hostname == cspServer.Name);
+                    if (runner == null)
                     {
-                        Status = RunnerStatus.DeletionQueued,
-                        Event = "Removing as VM not longer in any GitHub registration",
-                        EventTimeUtc = DateTime.UtcNow
-                    });
-                    await db.SaveChangesAsync();
-                    _queues.DeleteTasks.Enqueue(new()
+                        _logger.LogInformation($"{cspServer.Name} is not found in the database");
+                        continue;
+                    }
+
+                    if (runner.Lifecycle.Count(x => x.Status == RunnerStatus.DeletionQueued) > 10)
                     {
-                        RunnerDbId = runner.RunnerId,
-                        ServerId = htzSrv.Id
-                    });
+                        runner.Lifecycle.Add(new()
+                        {
+                            Status = RunnerStatus.DeletionQueued,
+                            Event = "Still around after going in deletion queue. trying again...",
+                            EventTimeUtc = DateTime.UtcNow
+                        });
+                        await db.SaveChangesAsync();
+                        _queues.DeleteTasks.Enqueue(new()
+                        {
+                            RunnerDbId = runner.RunnerId,
+                            ServerId = cspServer.Id
+                        });
+
+                    }
+                    else if (runner.Lifecycle.Any(x => x.Status == RunnerStatus.DeletionQueued))
+                    {
+                        runner.Lifecycle.Add(new()
+                        {
+                            Status = RunnerStatus.DeletionQueued,
+                            Event = "Don't queue deletion due to Github registration. Runner already queued for deletion.",
+                            EventTimeUtc = DateTime.UtcNow
+                        });
+                        await db.SaveChangesAsync();
+
+                    }
+                    else if ((runner.LastState >= RunnerStatus.Provisioned && DateTime.UtcNow - runner.LastStateTime > TimeSpan.FromMinutes(5)) ||
+                             (runner.LastState != RunnerStatus.Processing && DateTime.UtcNow - cspServer.CreatedAt.ToUniversalTime() > TimeSpan.FromMinutes(40)))
+                    {
+                        _logger.LogInformation($"Removing VM that is not in any GitHub registration: {cspServer.Name} created at {cspServer.CreatedAt:u}");
+                        runner.IsOnline = false;
+                        runner.Lifecycle.Add(new()
+                        {
+                            Status = RunnerStatus.DeletionQueued,
+                            Event = "Removing as VM not longer in any GitHub registration",
+                            EventTimeUtc = DateTime.UtcNow
+                        });
+                        await db.SaveChangesAsync();
+                        _queues.DeleteTasks.Enqueue(new()
+                        {
+                            RunnerDbId = runner.RunnerId,
+                            ServerId = cspServer.Id
+                        });
+
+                    }
 
                 }
 
             }
+            catch (Exception ex)
+            {
+                _logger.LogError($"Failed during cleanup from CSP {cc.CloudIdentifier}: {ex.Message}");
+            }
         }
-        catch (Exception ex)
+
+        foreach (var onlineSrvFromDb in db.Runners.Include(x => x.Lifecycle).Where(x => x.IsOnline))
         {
-            _logger.LogError($"Failed during cleanup from CSP: {ex.Message}");
+            if(onlineSrvFromDb.CreateTime + TimeSpan.FromHours(1) > DateTime.UtcNow ) continue; // Leave young runners alone
+            if (registeredServerNames.Contains(onlineSrvFromDb.Hostname)) continue;
+           
+            if(onlineSrvFromDb.LastState == RunnerStatus.DeletionQueued) continue;
+            
+            
+            _logger.LogWarning($"Runner {onlineSrvFromDb.Hostname} is marked online but not registered in GitHub. Marking offline.");
+            onlineSrvFromDb.Lifecycle.Add(new()
+            {
+                Status = RunnerStatus.VanishedOnCloud,
+                Event = "Marking VM as offline. Vanished from system.",
+                EventTimeUtc = DateTime.UtcNow
+            });
+            onlineSrvFromDb.IsOnline = false;
+
         }
+        await db.SaveChangesAsync();
 
     }
 
@@ -556,7 +649,12 @@ public class PoolManager : BackgroundService
         
         try
         {
-            await _cc.DeleteRunner(rt.ServerId);
+            ICloudController cc = _cc.FirstOrDefault(x => x.CloudIdentifier == runner.Cloud);
+            if (cc == null)
+            {
+                throw new NullReferenceException($"No Cloud controller found for runner {runner.Cloud}");
+            }
+            await cc.DeleteRunner(rt.ServerId);
             runner.IsOnline = false;
             runner.Lifecycle.Add(new()
             {
@@ -603,6 +701,29 @@ public class PoolManager : BackgroundService
     {
         var db = new ActionsRunnerContext();
         var runner = await db.Runners.Include(x => x.Lifecycle).FirstOrDefaultAsync(x => x.RunnerId == rt.RunnerDbId);
+        
+        // Check if cloud is stable atm
+        
+        var possibleProviders =
+            Program.Config.Sizes.FirstOrDefault(x => x.Name == runner.Size && x.Arch == runner.Arch)?.VmTypes;
+
+        if (possibleProviders == null)
+        {
+            throw new NullReferenceException($"No VM provider found for runner {runner.Size}/{runner.Arch}");
+        }
+
+        var selectedProvider = possibleProviders
+            .Where(x => !_bannedClouds.Any(y => y.Cloud == x.Cloud && y.Size == runner.Size))
+            .OrderByDescending(x => x.Priority)
+            .FirstOrDefault();
+
+        if (selectedProvider == null)
+        {
+            throw new Exception($"No VM provider available for runner {runner.Size}/{runner.Arch}");
+        }
+        
+        var cc = _cc.First(x => x.CloudIdentifier == selectedProvider.Cloud);
+        
         try
         {
             string targetName = rt.TargetType switch
@@ -611,7 +732,9 @@ public class PoolManager : BackgroundService
                 TargetType.Organization => runner.Owner,
                 _ => throw new ArgumentOutOfRangeException()
             };
-            Machine newRunner = await _cc.CreateNewRunner(runner.Arch, runner.Size, rt.RunnerToken, targetName, runner.IsCustom, runner.Profile);
+            
+            
+            Machine newRunner = await cc.CreateNewRunner(runner.Arch, runner.Size, rt.RunnerToken, targetName, runner.IsCustom, runner.Profile);
             _logger.LogInformation($"New Runner {newRunner.Name} [{runner.Size} on {runner.Arch}] entering pool for {targetName}.");
             MachineCreatedCount.Labels(runner.Owner, runner.Size).Inc();
 
@@ -619,6 +742,10 @@ public class PoolManager : BackgroundService
             runner.IsOnline = true;
             runner.CloudServerId = newRunner.Id;
             runner.IPv4 = newRunner.Ipv4;
+            runner.Cloud = cc.CloudIdentifier;
+            runner.ProvisionId = newRunner.ProvisionId;
+            runner.ProvisionPayload = newRunner.ProvisionPayload;
+            
             
             runner.Lifecycle.Add(new RunnerLifecycle
             {
@@ -656,7 +783,23 @@ public class PoolManager : BackgroundService
                 });
             }
             await db.SaveChangesAsync();
+            
+            // Ban size on cloud for 30min
+            _bannedClouds.Add(new CloudBan()
+            {
+                Cloud = cc.CloudIdentifier,
+                Size = runner.Size,
+                UnbanTime = DateTime.UtcNow + TimeSpan.FromMinutes(30) 
+            });
+
             return false;
         }
     }
+}
+
+internal class CloudBan
+{
+    public string Cloud { get; set; }
+    public string Size { get; set; }
+    public DateTime UnbanTime { get; set; }
 }

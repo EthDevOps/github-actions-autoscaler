@@ -109,6 +109,8 @@ public class Runner
 
     public bool StuckJobReplacement { get; set; } = false;
     public bool UsePrivateNetwork { get; set; }
+    public string ProvisionId { get; set; }
+    public string ProvisionPayload { get; set; }
 }
 
 public enum RunnerStatus
