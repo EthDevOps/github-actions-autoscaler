@@ -58,23 +58,34 @@ public class ProxmoxCloudController : BaseCloudController, ICloudController
         
         try
         {
+
+            string selectedNode = _mainNode;
+            
             // Select node
-            var resources = (await client.Cluster.Resources.GetAsync("vm")).ToList();
-            var availableNodes = resources.Select(x => x.Node).Distinct().ToList();
-            
-            var vmCountByNode = availableNodes
-                .GroupJoin(
-                    resources.Where(x => x.Name.StartsWith(Program.Config.RunnerPrefix)),
-                    node => node,
-                    resource => resource.Node,
-                    (node, matchingResources) => new { Node = node, Count = matchingResources.Count() }
-                )
-                .ToList(); 
-            
-            
-            var nodeWithLeastRunners = vmCountByNode.OrderBy(x => x.Count).First();
-            var selectedNode = nodeWithLeastRunners.Node;
-            
+            try
+            {
+                var resources = (await client.Cluster.Resources.GetAsync("vm")).ToList();
+                var availableNodes = resources.Select(x => x.Node).Distinct().ToList();
+
+                var vmCountByNode = availableNodes
+                    .GroupJoin(
+                        resources.Where(x => x.Name.StartsWith(Program.Config.RunnerPrefix)),
+                        node => node,
+                        resource => resource.Node,
+                        (node, matchingResources) => new { Node = node, Count = matchingResources.Count() }
+                    )
+                    .ToList();
+
+
+                var nodeWithLeastRunners = vmCountByNode.OrderBy(x => x.Count).First();
+                selectedNode = nodeWithLeastRunners.Node;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Unable to get available nodes - using main node: {ex.GetFullExceptionDetails()}");
+                Thread.Sleep(500);
+            }
+
             Result newVmIdResult = await client.Cluster.Nextid.Nextid();
             newVmId = int.Parse(newVmIdResult.Response.data);
 
