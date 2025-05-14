@@ -27,7 +27,12 @@ public class Runner
     {
         get
         {
-            return Lifecycle.FirstOrDefault(x => x.Status == RunnerStatus.Created)!.EventTimeUtc;
+            var createdTime = Lifecycle.FirstOrDefault(x => x.Status == RunnerStatus.Created);
+            if (createdTime == null)
+            {
+                return DateTime.MaxValue;
+            }
+            return createdTime.EventTimeUtc;
         }
     }
 
