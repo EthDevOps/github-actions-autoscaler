@@ -151,7 +151,7 @@ public class PoolManager : BackgroundService
         {
 
             // check if runner is old enough to be stuck
-            if (stuckRunner.CreateTime + TimeSpan.FromMinutes(5) > DateTime.UtcNow)
+            if (stuckRunner.CreatedTime + TimeSpan.FromMinutes(10) > DateTime.UtcNow)
                 continue;
             
             // Note stuckness in lifecycle and add runner to deletion queue
@@ -453,7 +453,7 @@ public class PoolManager : BackgroundService
                     continue;
                 }
 
-                if (DateTime.UtcNow - runner.CreateTime < TimeSpan.FromMinutes(30))
+                if (DateTime.UtcNow - runner.CreationQueuedTime < TimeSpan.FromMinutes(30))
                 {
                     // VM younger than 30min - not cleaning yet
                     continue;
@@ -488,7 +488,7 @@ public class PoolManager : BackgroundService
                     continue;
                 }
 
-                if (DateTime.UtcNow - runner.CreateTime < TimeSpan.FromHours(6))
+                if (DateTime.UtcNow - runner.CreationQueuedTime < TimeSpan.FromHours(6))
                 {
                     // VM younger than 6h - not cleaning yet
                     continue;
@@ -622,7 +622,7 @@ public class PoolManager : BackgroundService
 
         foreach (var onlineSrvFromDb in db.Runners.Include(x => x.Lifecycle).Where(x => x.IsOnline))
         {
-            if(onlineSrvFromDb.CreateTime + TimeSpan.FromHours(1) > DateTime.UtcNow ) continue; // Leave young runners alone
+            if(onlineSrvFromDb.CreationQueuedTime + TimeSpan.FromHours(1) > DateTime.UtcNow ) continue; // Leave young runners alone
             if (registeredServerNames.Contains(onlineSrvFromDb.Hostname)) continue;
            
             if(onlineSrvFromDb.LastState == RunnerStatus.DeletionQueued) continue;

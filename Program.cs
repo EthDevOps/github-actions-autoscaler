@@ -535,7 +535,7 @@ public class Program
         
         ProcessedJobCount.Labels(job.Owner, jobRunner.Size).Inc();
 
-        double secondsAlive = (DateTime.UtcNow - jobRunner.CreateTime).TotalSeconds;
+        double secondsAlive = (DateTime.UtcNow - jobRunner.CreationQueuedTime).TotalSeconds;
         TotalMachineTime.Labels(job.Owner, jobRunner.Size).Inc(secondsAlive);
         
     }

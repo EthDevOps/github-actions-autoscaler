@@ -16,11 +16,18 @@ public class Runner
     public ICollection<RunnerLifecycle> Lifecycle { get; set; }
     public long CloudServerId { get; set; }
 
-    public DateTime CreateTime
+    public DateTime CreationQueuedTime
     {
         get
         {
             return Lifecycle.FirstOrDefault(x => x.Status == RunnerStatus.CreationQueued)!.EventTimeUtc;
+        }
+    }
+    public DateTime CreatedTime
+    {
+        get
+        {
+            return Lifecycle.FirstOrDefault(x => x.Status == RunnerStatus.Created)!.EventTimeUtc;
         }
     }
 
