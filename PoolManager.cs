@@ -709,7 +709,8 @@ public class PoolManager : BackgroundService
 
         if (possibleProviders == null)
         {
-            throw new NullReferenceException($"No VM provider found for runner {runner.Size}/{runner.Arch}");
+            _logger.LogError($"No VM provider found for runner {runner.Size}/{runner.Arch}");
+            return false;
         }
 
         var selectedProvider = possibleProviders
@@ -719,7 +720,8 @@ public class PoolManager : BackgroundService
 
         if (selectedProvider == null)
         {
-            throw new Exception($"No VM provider available for runner {runner.Size}/{runner.Arch}");
+            _logger.LogError($"No VM provider available for runner {runner.Size}/{runner.Arch}");
+            return false;
         }
         
         var cc = _cc.First(x => x.CloudIdentifier == selectedProvider.Cloud);
