@@ -146,34 +146,50 @@ public class PoolManager : BackgroundService
     {
         // check the database for runners that are in "created" state for more then 5 minutes.
         
-        var db = new ActionsRunnerContext();
-        foreach(var stuckRunner in db.Runners.Include(x => x.Lifecycle).AsEnumerable().Where(x => x.LastState == RunnerStatus.Created))
+        await using var db = new ActionsRunnerContext();
+        var cutoffTime = DateTime.UtcNow - TimeSpan.FromMinutes(10);
+        
+        // Query stuck runners without loading lifecycle collections
+        var stuckRunners = await db.Runners
+            .AsNoTracking()
+            .Where(x => x.LastState == RunnerStatus.Created && x.CreatedTime < cutoffTime)
+            .Select(x => new { x.RunnerId, x.CloudServerId, x.Hostname, x.Cloud })
+            .ToListAsync();
+        
+        if (stuckRunners.Count == 0)
+            return;
+        
+        // Process stuck runners and create lifecycle entries
+        var lifecycleEntries = new List<RunnerLifecycle>();
+        
+        foreach(var stuckRunner in stuckRunners)
         {
-
-            // check if runner is old enough to be stuck
-            if (stuckRunner.CreatedTime + TimeSpan.FromMinutes(10) > DateTime.UtcNow)
-                continue;
-            
-            // Note stuckness in lifecycle and add runner to deletion queue
-            stuckRunner.Lifecycle.Add(new RunnerLifecycle
-            {
-                Event = "Stuck in provisioning. Killing.",
-                EventTimeUtc = DateTime.UtcNow,
-                Status = RunnerStatus.Failure
-            });
-           
+            // Add to deletion queue
             _queues.DeleteTasks.Enqueue(new DeleteRunnerTask
             {
                 ServerId = stuckRunner.CloudServerId,
                 RunnerDbId = stuckRunner.RunnerId
             });
             
-            _logger.LogWarning($"Killing Runner stuck in provisioning: {stuckRunner.Hostname} on {stuckRunner.Cloud}");
+            // Create lifecycle entry for batch insert
+            lifecycleEntries.Add(new RunnerLifecycle
+            {
+                RunnerId = stuckRunner.RunnerId,
+                Event = "Stuck in provisioning. Killing.",
+                EventTimeUtc = DateTime.UtcNow,
+                Status = RunnerStatus.Failure
+            });
             
+            _logger.LogWarning($"Killing Runner stuck in provisioning: {stuckRunner.Hostname} on {stuckRunner.Cloud}");
         }
         
-        // write to DB
-        await db.SaveChangesAsync();
+        // Batch insert lifecycle entries without change tracking
+        if (lifecycleEntries.Count > 0)
+        {
+            db.ChangeTracker.AutoDetectChangesEnabled = false;
+            db.RunnerLifecycles.AddRange(lifecycleEntries);
+            await db.SaveChangesAsync();
+        }
     }
 
     private async Task ProcessStats(List<GithubTargetConfiguration> targetConfig)
