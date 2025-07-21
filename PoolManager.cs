@@ -571,6 +571,22 @@ public class PoolManager : BackgroundService
                         continue;
                     }
 
+                    // Check for a runner existing longer than 24h that might have vanished from github but is still processing
+                    var cspRunnerDb = await db.Runners.Include(x => x.Job).FirstOrDefaultAsync(x => x.Hostname == cspServer.Name);
+                    if (cspRunnerDb != null)
+                    {
+                        // query github for job
+                        var runnerToken = Program.Config.TargetConfigs.FirstOrDefault(x => x.Name == cspRunnerDb.Job.Owner).GitHubToken;
+                        var githubJob = await GitHubApi.GetJobInfoForOrg(cspRunnerDb.Job.GithubJobId, cspRunnerDb.Job.Repository, runnerToken);
+                        if (githubJob.Status == "running")
+                        {
+                            _logger.LogWarning($"Got a runner ({cspServer.Name}) not in GitHub anymore but still processing. Indicates a >24h job.");
+                            continue;
+                        }
+
+                    }
+                    
+
                     _logger.LogInformation($"{cspServer.Name} is a candidate to be killed from {cc.CloudIdentifier}");
 
                     var runner = await db.Runners.Include(x => x.Lifecycle).FirstOrDefaultAsync(x => x.Hostname == cspServer.Name);
