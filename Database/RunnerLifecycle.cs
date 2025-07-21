@@ -2,6 +2,7 @@ namespace GithubActionsOrchestrator.Database;
 
 public class RunnerLifecycle
 {
+    public int RunnerId { get; set; }
     public int RunnerLifecycleId { get; set; }
     public DateTime EventTimeUtc { get; set; }
     public string Event { get; set; }
