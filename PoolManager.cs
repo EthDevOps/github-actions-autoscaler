@@ -86,9 +86,16 @@ public class PoolManager : BackgroundService
             {
                 
                 _logger.LogInformation("Cleaning runners...");
-                
-                await CheckForStuckRunners(targetConfig);
-                
+
+                try
+                {
+                    await CheckForStuckRunners(targetConfig);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError($"Unable to check for stuck runners: {ex.GetFullExceptionDetails()}");
+                }
+
                 await CleanUpRunners(targetConfig);
                 await StartPoolRunners(targetConfig);
                 await CheckForStuckJobs(targetConfig);
@@ -149,11 +156,17 @@ public class PoolManager : BackgroundService
         await using var db = new ActionsRunnerContext();
         var cutoffTime = DateTime.UtcNow - TimeSpan.FromMinutes(10);
         
-        // Query stuck runners without loading lifecycle collections
+        // Query stuck runners by joining with lifecycle table
         var stuckRunners = await db.Runners
             .AsNoTracking()
-            .Where(x => x.LastState == RunnerStatus.Created && x.CreatedTime < cutoffTime)
-            .Select(x => new { x.RunnerId, x.CloudServerId, x.Hostname, x.Cloud })
+            .Where(r => db.RunnerLifecycles
+                .Where(rl => rl.RunnerId == r.RunnerId && rl.Status == RunnerStatus.Created)
+                .Any(rl => rl.EventTimeUtc < cutoffTime) &&
+                db.RunnerLifecycles
+                .Where(rl => rl.RunnerId == r.RunnerId)
+                .OrderByDescending(rl => rl.EventTimeUtc)
+                .First().Status == RunnerStatus.Created)
+            .Select(r => new { r.RunnerId, r.CloudServerId, r.Hostname, r.Cloud })
             .ToListAsync();
         
         if (stuckRunners.Count == 0)
