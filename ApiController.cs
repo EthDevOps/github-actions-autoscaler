@@ -1,4 +1,5 @@
 using GithubActionsOrchestrator.Database;
+using GithubActionsOrchestrator.Models;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Npgsql.Internal;
@@ -7,6 +8,12 @@ namespace GithubActionsOrchestrator;
 [Route("/api")]
 public class ApiController : Controller
 {
+    private readonly RunnerQueue _runnerQueue;
+
+    public ApiController(RunnerQueue runnerQueue)
+    {
+        _runnerQueue = runnerQueue;
+    }
     [Route("get-runners")]
     public async Task<IResult> GetRunners([FromQuery] int limit = 100, [FromQuery] int offset = 0)
     {
@@ -83,6 +90,47 @@ public class ApiController : Controller
         
         return Results.Content(runner.ProvisionPayload);
 
+    }
+
+    [Route("kill-non-processing-runners")]
+    [HttpPost]
+    public async Task<IResult> KillNonProcessingRunners()
+    {
+        var db = new ActionsRunnerContext();
+        
+        // Find all runners that are not in Processing state using the lifecycle table
+        var runnersToKill = await db.Runners
+            .AsNoTracking()
+            .Where(r => db.RunnerLifecycles
+                .Where(rl => rl.RunnerId == r.RunnerId)
+                .OrderByDescending(rl => rl.EventTimeUtc)
+                .First().Status != RunnerStatus.Processing && 
+                db.RunnerLifecycles
+                .Where(rl => rl.RunnerId == r.RunnerId)
+                .OrderByDescending(rl => rl.EventTimeUtc)
+                .First().Status != RunnerStatus.DeletionQueued &&
+                db.RunnerLifecycles
+                .Where(rl => rl.RunnerId == r.RunnerId)
+                .OrderByDescending(rl => rl.EventTimeUtc)
+                .First().Status != RunnerStatus.Deleted)
+            .Select(r => new { r.RunnerId, r.CloudServerId, r.Hostname })
+            .ToListAsync();
+
+        // Queue deletion for each runner
+        foreach (var runner in runnersToKill)
+        {
+            _runnerQueue.DeleteTasks.Enqueue(new DeleteRunnerTask
+            {
+                ServerId = runner.CloudServerId,
+                RunnerDbId = runner.RunnerId
+            });
+        }
+
+        return Results.Json(new 
+        { 
+            message = $"Queued {runnersToKill.Count} runners for deletion",
+            killedRunners = runnersToKill.Select(r => new { r.RunnerId, r.Hostname }).ToList()
+        });
     }
 
     
