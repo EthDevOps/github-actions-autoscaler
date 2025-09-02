@@ -9,21 +9,25 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <PackageReference Include="Corsinvest.ProxmoxVE.Api" Version="8.4.0" />
-        <PackageReference Include="Corsinvest.ProxmoxVE.Api.Extension" Version="8.4.0" />
         <PackageReference Include="HetznerCloud.API" Version="1.1.8" />
         <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.0" />
-        <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.7">
+        <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.8">
           <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
           <PrivateAssets>all</PrivateAssets>
         </PackageReference>
-        <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="8.0.4" />
+        <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="8.0.8" />
         <PackageReference Include="prometheus-net" Version="8.2.1" />
         <PackageReference Include="prometheus-net.AspNetCore" Version="8.2.1" />
         <PackageReference Include="RandomFriendlyNameGenerator" Version="1.0.7" />
         <PackageReference Include="Serilog" Version="3.1.1" />
         <PackageReference Include="Serilog.AspNetCore" Version="8.0.1" />
         <PackageReference Include="Swashbuckle.AspNetCore" Version="6.4.0" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <Compile Remove="GithubActionsOrchestrator.IntegrationTests/**" />
+        <EmbeddedResource Remove="GithubActionsOrchestrator.IntegrationTests/**" />
+        <None Remove="GithubActionsOrchestrator.IntegrationTests/**" />
     </ItemGroup>
 
 </Project>

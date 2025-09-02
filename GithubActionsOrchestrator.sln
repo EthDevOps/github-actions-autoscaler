@@ -2,6 +2,8 @@
 Microsoft Visual Studio Solution File, Format Version 12.00
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GithubActionsOrchestrator", "GithubActionsOrchestrator.csproj", "{FD60E845-895D-40D7-8935-E346193328B6}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GithubActionsOrchestrator.IntegrationTests", "GithubActionsOrchestrator.IntegrationTests\GithubActionsOrchestrator.IntegrationTests.csproj", "{4ACC1E02-BCFE-4D86-B7AC-C8DDFC492BF1}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -12,5 +14,9 @@ Global
 		{FD60E845-895D-40D7-8935-E346193328B6}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{FD60E845-895D-40D7-8935-E346193328B6}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{FD60E845-895D-40D7-8935-E346193328B6}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4ACC1E02-BCFE-4D86-B7AC-C8DDFC492BF1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4ACC1E02-BCFE-4D86-B7AC-C8DDFC492BF1}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4ACC1E02-BCFE-4D86-B7AC-C8DDFC492BF1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4ACC1E02-BCFE-4D86-B7AC-C8DDFC492BF1}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

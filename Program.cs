@@ -119,7 +119,7 @@ public class Program
         builder.Services.AddSingleton<ICloudController, ProxmoxCloudController>(svc =>
         {
             ILogger<ProxmoxCloudController> logger = svc.GetRequiredService<ILogger<ProxmoxCloudController>>();
-            return new ProxmoxCloudController(logger, Config.Sizes, Config.ProvisionScriptBaseUrl, Config.MetricUser, Config.MetricPassword, Config.PveHost, Config.PveUsername, Config.PvePassword, Config.PveTemplate);
+            return new ProxmoxCloudController(logger, Config.Sizes, Config.ProvisionScriptBaseUrl, Config.MetricUser, Config.MetricPassword, Config.PveHost, Config.PveUsername, Config.PvePassword, Config.PveTemplate, Config.MinVmId);
         });
 
         WebApplication app = builder.Build();

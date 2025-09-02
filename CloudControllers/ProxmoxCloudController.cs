@@ -1,7 +1,6 @@
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
-using Corsinvest.ProxmoxVE.Api;
-using Corsinvest.ProxmoxVE.Api.Extension;
 using GithubActionsOrchestrator.Models;
 using HetznerCloudApi.Object.Server;
 
@@ -15,10 +14,15 @@ public class ProxmoxCloudController : BaseCloudController, ICloudController
     private readonly string _pvePassword;
     private readonly string _mainNode;
     private readonly int _pveTemplate;
+    private readonly int _minVmId;
     private readonly SemaphoreSlim _semaphore = new SemaphoreSlim(1, 1);
-    private ILogger _logger;
+    private readonly HttpClient _httpClient;
+    private new readonly ILogger _logger;
+    private string _authTicket;
+    private string _csrfToken;
+    private DateTime _authExpiration = DateTime.MinValue;
 
-    public ProxmoxCloudController(ILogger<ProxmoxCloudController> logger, List<MachineSize> configSizes, string configProvisionScriptBaseUrl, string configMetricUser, string configMetricPassword, string configPveHost, string configPveUsername, string configPvePassword, int configPveTemplate) :
+    public ProxmoxCloudController(ILogger<ProxmoxCloudController> logger, List<MachineSize> configSizes, string configProvisionScriptBaseUrl, string configMetricUser, string configMetricPassword, string configPveHost, string configPveUsername, string configPvePassword, int configPveTemplate, int minVmId = 5000) :
         base(logger, configSizes, configProvisionScriptBaseUrl, configMetricUser, configMetricPassword)
     {
         _configSizes = configSizes;
@@ -26,31 +30,198 @@ public class ProxmoxCloudController : BaseCloudController, ICloudController
         _pveUsername = configPveUsername;
         _pvePassword = configPvePassword;
         _pveTemplate = configPveTemplate;
+        _minVmId = minVmId;
         _mainNode = "colo-pxe-01";
         _logger = logger;
-        logger.LogInformation("DCL1 Cloud Controller init done.");
+        
+        // Validate configuration for safety
+        ValidateConfiguration();
+        
+        _httpClient = new HttpClient();
+        _httpClient.DefaultRequestHeaders.Add("User-Agent", "GithubActionsOrchestrator");
+        var handler = new HttpClientHandler()
+        {
+            ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true
+        };
+        _httpClient = new HttpClient(handler);
+        
+        logger.LogInformation("PVE Cloud Controller init done.");
+    }
+
+    private void ValidateConfiguration()
+    {
+        if (_minVmId < 1000)
+        {
+            throw new ArgumentException($"MinVmId ({_minVmId}) must be >= 1000 for safety");
+        }
+
+        if (string.IsNullOrEmpty(_pveHost))
+        {
+            throw new ArgumentException("PVE Host cannot be null or empty");
+        }
+
+        if (string.IsNullOrEmpty(_pveUsername) || string.IsNullOrEmpty(_pvePassword))
+        {
+            throw new ArgumentException("PVE credentials cannot be null or empty");
+        }
+
+        _logger.LogInformation($"PVE Controller configured with MinVmId: {_minVmId}, Host: {_pveHost}");
+    }
+
+    private async Task<bool> AuthenticateAsync()
+    {
+        if (_authTicket != null && DateTime.UtcNow < _authExpiration)
+        {
+            return true;
+        }
+
+        try
+        {
+            var authData = new FormUrlEncodedContent(new[]
+            {
+                new KeyValuePair<string, string>("username", _pveUsername),
+                new KeyValuePair<string, string>("password", _pvePassword)
+            });
+
+            var response = await _httpClient.PostAsync($"https://{_pveHost}:8006/api2/json/access/ticket", authData);
+            
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogError($"Authentication failed: {response.StatusCode}");
+                return false;
+            }
+
+            var content = await response.Content.ReadAsStringAsync();
+            var authResponse = JsonSerializer.Deserialize<JsonElement>(content);
+            
+            if (authResponse.TryGetProperty("data", out var dataElement))
+            {
+                _authTicket = dataElement.GetProperty("ticket").GetString();
+                _csrfToken = dataElement.GetProperty("CSRFPreventionToken").GetString();
+                _authExpiration = DateTime.UtcNow.AddHours(1.5);
+                
+                _httpClient.DefaultRequestHeaders.Remove("Cookie");
+                _httpClient.DefaultRequestHeaders.Add("Cookie", $"PVEAuthCookie={_authTicket}");
+                
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Authentication failed");
+        }
+
+        return false;
+    }
+
+    private async Task<string> MakeApiCallAsync(string endpoint, HttpMethod method = null, object data = null)
+    {
+        method ??= HttpMethod.Get;
+        
+        if (!await AuthenticateAsync())
+        {
+            throw new Exception("Authentication failed");
+        }
+
+        var request = new HttpRequestMessage(method, $"https://{_pveHost}:8006/api2/json{endpoint}");
+        
+        if (method != HttpMethod.Get && _csrfToken != null)
+        {
+            request.Headers.Add("CSRFPreventionToken", _csrfToken);
+        }
+
+        if (data != null && (method == HttpMethod.Post || method == HttpMethod.Put))
+        {
+            if (data is FormUrlEncodedContent formContent)
+            {
+                request.Content = formContent;
+            }
+            else
+            {
+                var json = JsonSerializer.Serialize(data);
+                request.Content = new StringContent(json, Encoding.UTF8, "application/json");
+            }
+        }
+
+        var response = await _httpClient.SendAsync(request);
+        
+        if (!response.IsSuccessStatusCode)
+        {
+            var errorContent = await response.Content.ReadAsStringAsync();
+            throw new Exception($"API call failed: {response.StatusCode} - {errorContent}");
+        }
+
+        return await response.Content.ReadAsStringAsync();
+    }
+
+    private async Task<int> GetNextAvailableVmIdAsync()
+    {
+        var response = await MakeApiCallAsync("/cluster/resources?type=vm");
+        var resourcesJson = JsonSerializer.Deserialize<JsonElement>(response);
+        
+        var existingIds = new HashSet<int>();
+        
+        if (resourcesJson.TryGetProperty("data", out var dataArray))
+        {
+            foreach (var resource in dataArray.EnumerateArray())
+            {
+                if (resource.TryGetProperty("vmid", out var vmidElement))
+                {
+                    existingIds.Add(vmidElement.GetInt32());
+                }
+            }
+        }
+
+        for (int id = _minVmId; id < _minVmId + 10000; id++)
+        {
+            if (!existingIds.Contains(id))
+            {
+                // Additional safety check - log the allocated VM ID
+                _logger.LogInformation($"Allocated VM ID: {id} (range: {_minVmId}-{_minVmId + 10000})");
+                return id;
+            }
+        }
+
+        throw new Exception($"No available VM IDs found in range {_minVmId}-{_minVmId + 10000}");
+    }
+
+    private async Task<string> WaitForTaskCompletionAsync(string taskId, string node)
+    {
+        while (true)
+        {
+            var response = await MakeApiCallAsync($"/nodes/{node}/tasks/{taskId}/status");
+            var taskJson = JsonSerializer.Deserialize<JsonElement>(response);
+            
+            if (taskJson.TryGetProperty("data", out var taskData))
+            {
+                if (taskData.TryGetProperty("status", out var statusElement))
+                {
+                    var status = statusElement.GetString();
+                    if (status == "stopped")
+                    {
+                        if (taskData.TryGetProperty("exitstatus", out var exitStatus))
+                        {
+                            if (exitStatus.GetString() != "OK")
+                            {
+                                throw new Exception($"Task failed with exit status: {exitStatus.GetString()}");
+                            }
+                        }
+                        return status;
+                    }
+                }
+            }
+            
+            await Task.Delay(1000);
+        }
     }
 
     public async Task<Machine> CreateNewRunner(string arch, string size, string runnerToken, string targetName, bool isCustom = false, string profileName = "default")
     {
         MachineType machineType = SelectMachineType(arch, size, CloudIdentifier, out MachineType machineTypeAlt);
         string hostname = await GenerateName();
-        // Load profile info
         RunnerProfile profile = isCustom ? Program.Config.Profiles.FirstOrDefault(x => x.Name == profileName) : Program.Config.Profiles.FirstOrDefault(x => x.Name == "default");
 
-        // Connect to Proxmox API
-        var client = new PveClient(_pveHost);
-
-        // Authenticate
-        if (!await client.LoginAsync(_pveUsername, _pvePassword))
-        {
-            throw new Exception("Authentication failed");
-        }
-
-        // Source template ID
         int sourceVmId = _pveTemplate;
-
-        // Get next available VMID
 
         await _semaphore.WaitAsync();
         string macaddress = string.Empty;
@@ -58,79 +229,89 @@ public class ProxmoxCloudController : BaseCloudController, ICloudController
         
         try
         {
-
             string selectedNode = _mainNode;
             
-            // Select node
             try
             {
-                var resources = (await client.Cluster.Resources.GetAsync("vm")).ToList();
-                var availableNodes = resources.Select(x => x.Node).Distinct().ToList();
+                var resourcesResponse = await MakeApiCallAsync("/cluster/resources?type=vm");
+                var resourcesJson = JsonSerializer.Deserialize<JsonElement>(resourcesResponse);
+                
+                if (resourcesJson.TryGetProperty("data", out var dataArray))
+                {
+                    var resources = dataArray.EnumerateArray().ToList();
+                    var availableNodes = resources
+                        .Where(r => r.TryGetProperty("node", out var _))
+                        .Select(r => r.GetProperty("node").GetString())
+                        .Distinct().ToList();
 
-                var vmCountByNode = availableNodes
-                    .GroupJoin(
-                        resources.Where(x => x.Name.StartsWith(Program.Config.RunnerPrefix)),
-                        node => node,
-                        resource => resource.Node,
-                        (node, matchingResources) => new { Node = node, Count = matchingResources.Count() }
-                    )
-                    .ToList();
+                    var vmCountByNode = availableNodes
+                        .Select(node => new 
+                        { 
+                            Node = node, 
+                            Count = resources.Count(r => 
+                                r.TryGetProperty("node", out var nodeElement) && 
+                                r.TryGetProperty("name", out var nameElement) &&
+                                nodeElement.GetString() == node &&
+                                nameElement.GetString().StartsWith(Program.Config.RunnerPrefix))
+                        })
+                        .ToList();
 
-
-                var nodeWithLeastRunners = vmCountByNode.OrderBy(x => x.Count).First();
-                selectedNode = nodeWithLeastRunners.Node;
+                    var nodeWithLeastRunners = vmCountByNode.OrderBy(x => x.Count).First();
+                    selectedNode = nodeWithLeastRunners.Node;
+                }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Unable to get available nodes - using main node: {ex.GetFullExceptionDetails()}");
-                Thread.Sleep(500);
+                _logger.LogError(ex, "Unable to get available nodes - using main node");
+                await Task.Delay(500);
             }
 
-            Result newVmIdResult = await client.Cluster.Nextid.Nextid();
-            newVmId = int.Parse(newVmIdResult.Response.data);
+            newVmId = await GetNextAvailableVmIdAsync();
 
-            // Create linked clone
-            var cloneResult = await client.Nodes[_mainNode].Qemu[sourceVmId].Clone.CloneVm(
-                newVmId,
-                name: hostname,
-                description: DateTime.UtcNow.ToString("O"),
-                full: false,
-                storage: null // Use same storage as source
-            );
-
-            if (!cloneResult.IsSuccessStatusCode)
+            var cloneData = new FormUrlEncodedContent(new[]
             {
-                throw new Exception($"Failed to clone VM: {cloneResult.ReasonPhrase}");
+                new KeyValuePair<string, string>("newid", newVmId.ToString()),
+                new KeyValuePair<string, string>("name", hostname),
+                new KeyValuePair<string, string>("description", DateTime.UtcNow.ToString("O")),
+                new KeyValuePair<string, string>("full", "0")
+            });
+
+            var cloneResponse = await MakeApiCallAsync($"/nodes/{_mainNode}/qemu/{sourceVmId}/clone", HttpMethod.Post, cloneData);
+            var cloneJson = JsonSerializer.Deserialize<JsonElement>(cloneResponse);
+            
+            if (cloneJson.TryGetProperty("data", out var cloneTaskId))
+            {
+                await WaitForTaskCompletionAsync(cloneTaskId.GetString(), _mainNode);
             }
 
-            // Wait for clone task to complete
-            await client.WaitForTaskToFinishAsync(cloneResult.Response.data);
-
-            await client.Pools.UpdatePool("github-runners", vms: newVmId.ToString());
-            
-            
-            //await client.Pools.UpdatePool()
+            var poolData = new FormUrlEncodedContent(new[]
+            {
+                new KeyValuePair<string, string>("vms", newVmId.ToString())
+            });
+            await MakeApiCallAsync("/pools/github-runners", HttpMethod.Put, poolData);
 
             if (_mainNode != selectedNode)
             {
-                var migrationResult = await client.Nodes[_mainNode].Qemu[newVmId].Migrate.MigrateVm(selectedNode);
-                if (!migrationResult.IsSuccessStatusCode)
+                var migrateData = new FormUrlEncodedContent(new[]
                 {
-                    throw new Exception($"Failed to move VM to target host: {migrationResult.ReasonPhrase}");
+                    new KeyValuePair<string, string>("target", selectedNode)
+                });
+                
+                var migrateResponse = await MakeApiCallAsync($"/nodes/{_mainNode}/qemu/{newVmId}/migrate", HttpMethod.Post, migrateData);
+                var migrateJson = JsonSerializer.Deserialize<JsonElement>(migrateResponse);
+                
+                if (migrateJson.TryGetProperty("data", out var migrateTaskId))
+                {
+                    await WaitForTaskCompletionAsync(migrateTaskId.GetString(), _mainNode);
                 }
-                await client.WaitForTaskToFinishAsync(migrationResult.Response.data);
             }
-            
 
-            // Set size
-            // Pattern to match: digits followed by 'c', then digits followed by 'g'
-            var match = System.Text.RegularExpressions.Regex.Match(machineType.VmType, @"(\d+)c(\d+)g");
-
+            var match = Regex.Match(machineType.VmType, @"(\d+)c(\d+)g");
             int cores = 2;
             int memory = 2;
+            
             if (match.Success && match.Groups.Count >= 3)
             {
-                // Parse the captured groups
                 if (int.TryParse(match.Groups[1].Value, out int parsedCores))
                 {
                     cores = parsedCores;
@@ -142,30 +323,37 @@ public class ProxmoxCloudController : BaseCloudController, ICloudController
                 }
             }
 
-            await client.Nodes[selectedNode].Qemu[newVmId].Config.UpdateVm(
-                cores: cores,
-                memory: (memory * 1024).ToString()
-            );
-
-            var vmConfig = await client.Nodes[selectedNode].Qemu[newVmId].Config.VmConfig();
-            string netConfig = vmConfig.Response.data.net0;
-
-            // Pattern to match MAC address format after "virtio="
-            Regex regex = new("virtio=([0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2})",
-                RegexOptions.IgnoreCase);
-            Match macMatch = regex.Match(netConfig);
-
-            if (macMatch.Success)
+            var configData = new FormUrlEncodedContent(new[]
             {
-                macaddress = macMatch.Groups[1].Value;
+                new KeyValuePair<string, string>("cores", cores.ToString()),
+                new KeyValuePair<string, string>("memory", (memory * 1024).ToString())
+            });
+
+            await MakeApiCallAsync($"/nodes/{selectedNode}/qemu/{newVmId}/config", HttpMethod.Put, configData);
+
+            var vmConfigResponse = await MakeApiCallAsync($"/nodes/{selectedNode}/qemu/{newVmId}/config");
+            var vmConfigJson = JsonSerializer.Deserialize<JsonElement>(vmConfigResponse);
+            
+            if (vmConfigJson.TryGetProperty("data", out var configData2) && 
+                configData2.TryGetProperty("net0", out var net0Element))
+            {
+                string netConfig = net0Element.GetString();
+                
+                Regex regex = new("virtio=([0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2})", RegexOptions.IgnoreCase);
+                Match macMatch = regex.Match(netConfig);
+
+                if (macMatch.Success)
+                {
+                    macaddress = macMatch.Groups[1].Value;
+                }
             }
             
-            // Start the VM
-            var startResult = await client.Nodes[selectedNode].Qemu[newVmId].Status.Start.VmStart();
-
-            if (!startResult.IsSuccessStatusCode)
+            var startResponse = await MakeApiCallAsync($"/nodes/{selectedNode}/qemu/{newVmId}/status/start", HttpMethod.Post);
+            var startJson = JsonSerializer.Deserialize<JsonElement>(startResponse);
+            
+            if (startJson.TryGetProperty("data", out var startTaskId))
             {
-                throw new Exception($"Failed to start VM: {startResult.ReasonPhrase}");
+                await WaitForTaskCompletionAsync(startTaskId.GetString(), selectedNode);
             }
         }
         finally
@@ -208,33 +396,53 @@ public class ProxmoxCloudController : BaseCloudController, ICloudController
 
     public async Task DeleteRunner(long serverId)
     {
-        // Connect to Proxmox API
         await _semaphore.WaitAsync();
         try
         {
-            var client = new PveClient(_pveHost);
-
-            // Authenticate
-            if (!await client.LoginAsync(_pveUsername, _pvePassword))
+            var resourcesResponse = await MakeApiCallAsync("/cluster/resources?type=vm");
+            var resourcesJson = JsonSerializer.Deserialize<JsonElement>(resourcesResponse);
+            
+            string selectedNode = null;
+            
+            if (resourcesJson.TryGetProperty("data", out var dataArray))
             {
-                throw new Exception("Authentication failed");
+                foreach (var resource in dataArray.EnumerateArray())
+                {
+                    if (resource.TryGetProperty("vmid", out var vmidElement) && 
+                        vmidElement.GetInt32() == serverId)
+                    {
+                        selectedNode = resource.GetProperty("node").GetString();
+                        break;
+                    }
+                }
             }
-
-            var resources = await client.Cluster.Resources.GetAsync("vm");
-            var vms = resources.FirstOrDefault(x => x.VmId == serverId);
-            if (vms == null)
+            
+            if (selectedNode == null)
             {
-               _logger.LogError("Unable to find VM with ID " + serverId + " in Proxmox."); 
+                _logger.LogError("Unable to find VM with ID " + serverId + " in Proxmox.");
                 return;
             }
-            string selectedNod = vms.Node;
-            var stopResult = await client.Nodes[selectedNod].Qemu[serverId].Status.Stop.VmStop();
-            // Wait for clone task to complete
-            await client.WaitForTaskToFinishAsync(stopResult.Response.data); 
+
+            var stopResponse = await MakeApiCallAsync($"/nodes/{selectedNode}/qemu/{serverId}/status/stop", HttpMethod.Post);
+            var stopJson = JsonSerializer.Deserialize<JsonElement>(stopResponse);
             
-            var destroyResult = await client.Nodes[selectedNod].Qemu[serverId].DestroyVm(skiplock: true);
-            // Wait for clone task to complete
-            await client.WaitForTaskToFinishAsync(destroyResult.Response.data);
+            if (stopJson.TryGetProperty("data", out var stopTaskId))
+            {
+                await WaitForTaskCompletionAsync(stopTaskId.GetString(), selectedNode);
+            }
+
+            var destroyData = new FormUrlEncodedContent(new[]
+            {
+                new KeyValuePair<string, string>("skiplock", "1")
+            });
+            
+            var destroyResponse = await MakeApiCallAsync($"/nodes/{selectedNode}/qemu/{serverId}", HttpMethod.Delete, destroyData);
+            var destroyJson = JsonSerializer.Deserialize<JsonElement>(destroyResponse);
+            
+            if (destroyJson.TryGetProperty("data", out var destroyTaskId))
+            {
+                await WaitForTaskCompletionAsync(destroyTaskId.GetString(), selectedNode);
+            }
         }
         finally
         {
@@ -247,69 +455,98 @@ public class ProxmoxCloudController : BaseCloudController, ICloudController
         await _semaphore.WaitAsync();
         try
         {
-            // Connect to Proxmox API
-            var client = new PveClient(_pveHost);
-
-            // Authenticate
-            if (!await client.LoginAsync(_pveUsername, _pvePassword))
-            {
-                throw new Exception("Authentication failed");
-            }
-
-            var resources = await client.Cluster.Resources.GetAsync("vm");
-            var vms = resources.Where(x => x.Name.StartsWith(Program.Config.RunnerPrefix));
-
+            var resourcesResponse = await MakeApiCallAsync("/cluster/resources?type=vm");
+            var resourcesJson = JsonSerializer.Deserialize<JsonElement>(resourcesResponse);
+            
             List<CspServer> servers = new();
 
-            foreach (var vm in vms)
+            if (resourcesJson.TryGetProperty("data", out var dataArray))
             {
-                var vmInfo = await client.Nodes[vm.Node].Qemu[vm.VmId].Config.VmConfig();
-                servers.Add(new CspServer
+                foreach (var resource in dataArray.EnumerateArray())
                 {
-                    Id = vm.VmId,
-                    Name = vm.Name,
-                    CreatedAt = vmInfo.Response.data.description
-                });
+                    if (resource.TryGetProperty("name", out var nameElement) && 
+                        nameElement.GetString().StartsWith(Program.Config.RunnerPrefix))
+                    {
+                        var vmid = resource.GetProperty("vmid").GetInt32();
+                        var name = nameElement.GetString();
+                        var node = resource.GetProperty("node").GetString();
+                        
+                        try
+                        {
+                            var vmConfigResponse = await MakeApiCallAsync($"/nodes/{node}/qemu/{vmid}/config");
+                            var vmConfigJson = JsonSerializer.Deserialize<JsonElement>(vmConfigResponse);
+                            
+                            DateTime createdAt = DateTime.MinValue;
+                            if (vmConfigJson.TryGetProperty("data", out var configData) && 
+                                configData.TryGetProperty("description", out var descElement))
+                            {
+                                var descString = descElement.GetString();
+                                if (DateTime.TryParse(descString, out var parsedDate))
+                                {
+                                    createdAt = parsedDate;
+                                }
+                            }
+
+                            servers.Add(new CspServer
+                            {
+                                Id = vmid,
+                                Name = name,
+                                CreatedAt = createdAt
+                            });
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, $"Failed to get config for VM {vmid}");
+                            servers.Add(new CspServer
+                            {
+                                Id = vmid,
+                                Name = name,
+                                CreatedAt = DateTime.MinValue
+                            });
+                        }
+                    }
+                }
             }
+            
             return servers;
         }
         finally
         {
             _semaphore.Release();
         }
-
-            
     }
 
     public async Task<int> GetServerCountFromCsp()
     {
-
         await _semaphore.WaitAsync();
         try
         {
-            // Connect to Proxmox API
-            var client = new PveClient(_pveHost);
-
-            // Authenticate
-            if (!await client.LoginAsync(_pveUsername, _pvePassword))
-            {
-                throw new Exception("Authentication failed");
-            }
-
-            var resources = await client.Cluster.Resources.GetAsync("vm");
-            if (resources == null)
+            var resourcesResponse = await MakeApiCallAsync("/cluster/resources?type=vm");
+            var resourcesJson = JsonSerializer.Deserialize<JsonElement>(resourcesResponse);
+            
+            if (!resourcesJson.TryGetProperty("data", out var dataArray))
             {
                 return 0;
             }
-            int runnerCount = resources.Count(x => x.Name.StartsWith(Program.Config.RunnerPrefix));
+            
+            int runnerCount = 0;
+            foreach (var resource in dataArray.EnumerateArray())
+            {
+                if (resource.TryGetProperty("name", out var nameElement) && 
+                    nameElement.GetString().StartsWith(Program.Config.RunnerPrefix))
+                {
+                    runnerCount++;
+                }
+            }
+            
             return runnerCount;
         }
         finally
         {
             _semaphore.Release();
         }
-
     }
 
     public string CloudIdentifier => "pve";
+
 }

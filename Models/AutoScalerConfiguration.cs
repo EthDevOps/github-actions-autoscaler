@@ -51,4 +51,6 @@ public class AutoScalerConfiguration
     public string ApiKey { get; set; }
     
     public int PveTemplate { get; set; }
+    
+    public int MinVmId { get; set; } = 5000;
 }
