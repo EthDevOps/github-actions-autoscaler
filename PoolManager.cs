@@ -220,6 +220,10 @@ public class PoolManager : BackgroundService
             catch(Exception ex)
             {
                 _logger.LogWarning($"Unable to get runner count from CSP {cc.CloudIdentifier}: {ex.GetFullExceptionDetails()}");
+                SentrySdk.CaptureException(ex, scope =>
+                {
+                    scope.SetTag("csp", cc.CloudIdentifier);
+                });
             }
         }
         
@@ -276,6 +280,7 @@ public class PoolManager : BackgroundService
         }
         catch (Exception ex)
         {
+            SentrySdk.CaptureException(ex);
             _logger.LogError($"Unable to get stats: {ex.Message}");
         }
     }
@@ -591,7 +596,7 @@ public class PoolManager : BackgroundService
                         // query github for job
                         var runnerToken = Program.Config.TargetConfigs.FirstOrDefault(x => x.Name == cspRunnerDb.Job.Owner).GitHubToken;
                         var githubJob = await GitHubApi.GetJobInfoForOrg(cspRunnerDb.Job.GithubJobId, cspRunnerDb.Job.Repository, runnerToken);
-                        if (githubJob.Status == "running")
+                        if (githubJob is { Status: "running" })
                         {
                             _logger.LogWarning($"Got a runner ({cspServer.Name}) not in GitHub anymore but still processing. Indicates a >24h job.");
                             continue;
@@ -661,6 +666,7 @@ public class PoolManager : BackgroundService
             }
             catch (Exception ex)
             {
+                SentrySdk.CaptureException(ex);
                 _logger.LogError($"Failed during cleanup from CSP {cc.CloudIdentifier}: {ex.Message}");
             }
         }
@@ -713,6 +719,10 @@ public class PoolManager : BackgroundService
         }
         catch (Exception ex)
         {
+            SentrySdk.CaptureException(ex, scope =>
+            {
+                scope.SetTag("server-id", rt.ServerId.ToString());
+            });
             _logger.LogError(
                 $"Unable to delete runner [{rt.ServerId} | Retry: {rt.RetryCount}]: {ex.Message}");
             rt.RetryCount += 1;
@@ -829,6 +839,11 @@ public class PoolManager : BackgroundService
         }
         catch (Exception ex)
         {
+            SentrySdk.CaptureException(ex, scope =>
+            {
+                scope.SetTag("runner-size", runner.Size);
+                scope.SetTag("runner-arch", runner.Arch);
+            });
             _logger.LogError($"Unable to create runner [{runner.Size} on {runner.Arch} | Retry: {rt.RetryCount}]: {ex.GetFullExceptionDetails()}");
             runner.Lifecycle.Add(new RunnerLifecycle
             {

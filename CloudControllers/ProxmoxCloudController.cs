@@ -108,6 +108,10 @@ public class ProxmoxCloudController : BaseCloudController, ICloudController
         }
         catch (Exception ex)
         {
+            SentrySdk.CaptureException(ex, scope =>
+            {
+                scope.SetTag("csp", "pve");
+            });
             _logger.LogError(ex, "Authentication failed");
         }
 
@@ -262,6 +266,10 @@ public class ProxmoxCloudController : BaseCloudController, ICloudController
             }
             catch (Exception ex)
             {
+                SentrySdk.CaptureException(ex, scope =>
+                {
+                    scope.SetTag("csp", "pve");
+                });
                 _logger.LogError(ex, "Unable to get available nodes - using main node");
                 await Task.Delay(500);
             }
@@ -496,6 +504,10 @@ public class ProxmoxCloudController : BaseCloudController, ICloudController
                         }
                         catch (Exception ex)
                         {
+                            SentrySdk.CaptureException(ex, scope =>
+                            {
+                                scope.SetTag("csp", "pve");
+                            });
                             _logger.LogWarning(ex, $"Failed to get config for VM {vmid}");
                             servers.Add(new CspServer
                             {

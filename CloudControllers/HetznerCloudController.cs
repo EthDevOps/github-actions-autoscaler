@@ -122,6 +122,11 @@ public class HetznerCloudController : BaseCloudController, ICloudController
                 // Htz not able to schedule in nbg, try different one
                 if (ex.Message.Contains("resource_unavailable"))
                 {
+                    SentrySdk.CaptureException(ex, scope =>
+                    {
+                        scope.SetTag("csp", "htz");
+                        scope.Level = SentryLevel.Warning;
+                    });
                     _logger.LogWarning($"Unable to create VM {name} from image {imageName} of size {size} in {dataCenters[ct]}. Trying different location.");
                     ct++;
                 }

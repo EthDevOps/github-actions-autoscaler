@@ -42,6 +42,13 @@ public class Program
 
     public static void Main(string[] args)
     {
+        //Init GlitchTip
+        SentrySdk.Init(options =>
+        {
+            options.Dsn = "https://32e67fe320454af79c685a59a3502116@glitchtip.ethquokkaops.io/1";
+        });
+        
+        
         // Set up logging
         Log.Logger = new LoggerConfiguration()
             .MinimumLevel.Debug()
