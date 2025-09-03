@@ -84,19 +84,23 @@ public class PoolManager : BackgroundService
             // check for culling interval
             if (DateTime.UtcNow - crudeTimer > TimeSpan.FromMinutes(cullMinutes))
             {
-                
                 _logger.LogInformation("Cleaning runners...");
 
+                var checkInId = SentrySdk.CaptureCheckIn("CheckForStuckRunners", CheckInStatus.InProgress);
                 try
                 {
                     await CheckForStuckRunners(targetConfig);
+                    SentrySdk.CaptureCheckIn("CheckForStuckRunners", CheckInStatus.Ok, checkInId);
                 }
                 catch (Exception ex)
                 {
                     _logger.LogError($"Unable to check for stuck runners: {ex.GetFullExceptionDetails()}");
+                    SentrySdk.CaptureCheckIn("CheckForStuckRunners", CheckInStatus.Error, checkInId);
+                    SentrySdk.CaptureException(ex);
                 }
 
                 await CleanUpRunners(targetConfig);
+                
                 await StartPoolRunners(targetConfig);
                 await CheckForStuckJobs(targetConfig);
 
@@ -577,6 +581,11 @@ public class PoolManager : BackgroundService
                 List<CspServer> remainingServers = await cc.GetAllServersFromCsp();
                 foreach (CspServer cspServer in remainingServers)
                 {
+                    
+                    SentrySdk.AddBreadcrumb("Checking server for removal.", category: "Cleanup", data: new Dictionary<string, string>
+                    {
+                        {"server", cspServer.Name}
+                    });
                     if (registeredServerNames.Contains(cspServer.Name))
                     {
                         // If we know the server in github, skip
@@ -593,13 +602,23 @@ public class PoolManager : BackgroundService
                     var cspRunnerDb = await db.Runners.Include(x => x.Job).FirstOrDefaultAsync(x => x.Hostname == cspServer.Name);
                     if (cspRunnerDb != null)
                     {
-                        // query github for job
-                        var runnerToken = Program.Config.TargetConfigs.FirstOrDefault(x => x.Name == cspRunnerDb.Job.Owner).GitHubToken;
-                        var githubJob = await GitHubApi.GetJobInfoForOrg(cspRunnerDb.Job.GithubJobId, cspRunnerDb.Job.Repository, runnerToken);
-                        if (githubJob is { Status: "running" })
+                        try
                         {
-                            _logger.LogWarning($"Got a runner ({cspServer.Name}) not in GitHub anymore but still processing. Indicates a >24h job.");
-                            continue;
+                            // query github for job
+                            var runnerToken = Program.Config.TargetConfigs.FirstOrDefault(x => x.Name == cspRunnerDb.Job.Owner).GitHubToken;
+                            var githubJob = await GitHubApi.GetJobInfoForOrg(cspRunnerDb.Job.GithubJobId, cspRunnerDb.Job.Repository, runnerToken);
+                            if (githubJob is { Status: "running" })
+                            {
+                                _logger.LogWarning($"Got a runner ({cspServer.Name}) not in GitHub anymore but still processing. Indicates a >24h job.");
+                                continue;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            SentrySdk.CaptureException(ex, scope =>
+                            {
+                                scope.Level = SentryLevel.Warning;
+                            });
                         }
 
                     }
