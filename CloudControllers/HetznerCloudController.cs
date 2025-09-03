@@ -170,9 +170,20 @@ public class HetznerCloudController : BaseCloudController, ICloudController
         {
             _logger.LogInformation($"Deleting VM {runner.Hostname} with IP {runner.IPv4}");
         }
-        
-        await _client.Server.Delete(serverId);
        
+        try
+        {
+            await _client.Server.Delete(serverId);
+        }
+        catch (Exception ex)
+        {
+            if (ex.Message.Contains("not_found"))
+            {
+                _logger.LogInformation($"Server {serverId} not found - already deleted or does not exist");
+                return;
+            }
+            throw;
+        }
     }
 
     public async Task<List<CspServer>> GetAllServersFromCsp()

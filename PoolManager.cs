@@ -600,7 +600,7 @@ public class PoolManager : BackgroundService
 
                     // Check for a runner existing longer than 24h that might have vanished from github but is still processing
                     var cspRunnerDb = await db.Runners.Include(x => x.Job).FirstOrDefaultAsync(x => x.Hostname == cspServer.Name);
-                    if (cspRunnerDb != null)
+                    if (cspRunnerDb is { Job: not null })
                     {
                         try
                         {
