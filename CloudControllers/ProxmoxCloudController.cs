@@ -215,7 +215,93 @@ public class ProxmoxCloudController : BaseCloudController, ICloudController
                 }
             }
             
-            await Task.Delay(1000);
+            await Task.Delay(500);
+        }
+    }
+
+    private async Task<string> GetVmIpAddressAsync(int vmId, string node, int timeoutSeconds = 120)
+    {
+        var endTime = DateTime.UtcNow.AddSeconds(timeoutSeconds);
+        
+        while (DateTime.UtcNow < endTime)
+        {
+            try
+            {
+                var response = await MakeApiCallAsync($"/nodes/{node}/qemu/{vmId}/agent/network-get-interfaces");
+                var networkJson = JsonSerializer.Deserialize<JsonElement>(response);
+                
+                if (networkJson.TryGetProperty("data", out var dataElement) && dataElement.TryGetProperty("result", out var interfaces))
+                {
+                    foreach (var iface in interfaces.EnumerateArray())
+                    {
+                        if (iface.TryGetProperty("name", out var nameElement) && 
+                            nameElement.GetString() != "lo" && 
+                            iface.TryGetProperty("ip-addresses", out var ipAddresses))
+                        {
+                            foreach (var ipAddr in ipAddresses.EnumerateArray())
+                            {
+                                if (ipAddr.TryGetProperty("ip-address-type", out var typeElement) &&
+                                    typeElement.GetString() == "ipv4" &&
+                                    ipAddr.TryGetProperty("ip-address", out var ipElement))
+                                {
+                                    var ip = ipElement.GetString();
+                                    if (!ip.StartsWith("169.254.") && !ip.StartsWith("127."))
+                                    {
+                                        _logger.LogInformation($"Retrieved IP address for VM {vmId}: {ip}");
+                                        return ip;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug($"Failed to get IP for VM {vmId}, retrying... Error: {ex.Message}");
+            }
+            
+            await Task.Delay(3000);
+        }
+        
+        _logger.LogWarning($"Timeout waiting for IP address for VM {vmId}, falling back to dummy IP");
+        return "0.0.0.0/0";
+    }
+
+    public async Task<string> UpdateRunnerIpAddressAsync(long cloudServerId)
+    {
+        await _semaphore.WaitAsync();
+        try
+        {
+            var resourcesResponse = await MakeApiCallAsync("/cluster/resources?type=vm");
+            var resourcesJson = JsonSerializer.Deserialize<JsonElement>(resourcesResponse);
+            
+            string selectedNode = null;
+            
+            if (resourcesJson.TryGetProperty("data", out var dataArray))
+            {
+                foreach (var resource in dataArray.EnumerateArray())
+                {
+                    if (resource.TryGetProperty("vmid", out var vmidElement) && 
+                        vmidElement.GetInt32() == cloudServerId)
+                    {
+                        selectedNode = resource.GetProperty("node").GetString();
+                        break;
+                    }
+                }
+            }
+            
+            if (selectedNode == null)
+            {
+                _logger.LogWarning($"Unable to find VM with ID {cloudServerId} in Proxmox for IP update");
+                return "0.0.0.0/0";
+            }
+
+            return await GetVmIpAddressAsync((int)cloudServerId, selectedNode);
+        }
+        finally
+        {
+            _semaphore.Release();
         }
     }
 
@@ -230,7 +316,7 @@ public class ProxmoxCloudController : BaseCloudController, ICloudController
         await _semaphore.WaitAsync();
         string macaddress = string.Empty;
         int newVmId;
-        
+
         try
         {
             string selectedNode = _mainNode;

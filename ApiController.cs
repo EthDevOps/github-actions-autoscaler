@@ -1,5 +1,6 @@
 using GithubActionsOrchestrator.Database;
 using GithubActionsOrchestrator.Models;
+using GithubActionsOrchestrator.CloudControllers;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Npgsql.Internal;
@@ -69,7 +70,7 @@ public class ApiController : Controller
     }
     
     [Route("provision/{provisionId}")]
-    public async Task<IResult> GetProvisionScript(string provisionId,[FromHeader(Name = "X-API-KEY")] string apiKey)
+    public async Task<IResult> GetProvisionScript(string provisionId,[FromHeader(Name = "X-API-KEY")] string apiKey, [FromServices] IServiceProvider serviceProvider)
     {
         /*// Check if API key is provided
         if (string.IsNullOrEmpty(apiKey))
@@ -87,6 +88,29 @@ public class ApiController : Controller
         var runner = await db.Runners.Where(x => x.ProvisionId.ToLower() == provisionId).FirstOrDefaultAsync();
         if(runner == null)
             return Results.NotFound();
+
+        // Update the runner's IP address if using Proxmox and IP is still dummy
+        if (runner.Cloud == "pve" && (string.IsNullOrEmpty(runner.IPv4) || runner.IPv4 == "0.0.0.0/0"))
+        {
+            try
+            {
+                var proxmoxController = serviceProvider.GetService<ProxmoxCloudController>();
+                if (proxmoxController != null)
+                {
+                    var actualIpAddress = await proxmoxController.UpdateRunnerIpAddressAsync(runner.CloudServerId);
+                    if (actualIpAddress != "0.0.0.0/0")
+                    {
+                        runner.IPv4 = actualIpAddress;
+                        await db.SaveChangesAsync();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                // Log the error but don't fail the provision request
+                Console.WriteLine($"Failed to update IP for runner {runner.RunnerId}: {ex.Message}");
+            }
+        }
         
         return Results.Content(runner.ProvisionPayload);
 
