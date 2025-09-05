@@ -108,6 +108,7 @@ public class ApiController : Controller
             catch (Exception ex)
             {
                 // Log the error but don't fail the provision request
+                SentrySdk.CaptureException(ex);
                 Console.WriteLine($"Failed to update IP for runner {runner.RunnerId}: {ex.Message}");
             }
         }
