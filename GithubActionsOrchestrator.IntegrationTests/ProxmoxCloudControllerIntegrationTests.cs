@@ -191,4 +191,49 @@ public class ProxmoxCloudControllerIntegrationTests : IClassFixture<ProxmoxTestF
             await _fixture.Controller.CreateNewRunner(invalidArch, invalidSize, runnerToken, targetName);
         });
     }
+
+    [Fact]
+    public async Task UpdateRunnerIpAddressAsync_ShouldRetrieveActualIpAddress()
+    {
+        // Arrange - Create a VM first
+        const string arch = "x64";
+        const string size = "small";
+        const string runnerToken = "test-token-ip";
+        const string targetName = "test-org-ip";
+
+        var machine = await _fixture.Controller.CreateNewRunner(arch, size, runnerToken, targetName);
+        _fixture.TrackCreatedVm(machine.Id);
+
+        // Verify initial IP is dummy
+        Assert.Equal("0.0.0.0/0", machine.Ipv4);
+
+        // Wait a bit for VM to fully start and get network configuration
+        await Task.Delay(30000); // 30 seconds to allow VM to boot and get IP
+
+        // Act - Update the IP address
+        var actualIpAddress = await _fixture.Controller.UpdateRunnerIpAddressAsync(machine.Id);
+
+        // Assert - IP should be updated (not dummy)
+        Assert.NotEqual("0.0.0.0/0", actualIpAddress);
+        Assert.NotNull(actualIpAddress);
+        Assert.NotEmpty(actualIpAddress);
+        
+        // Basic IP format validation
+        var parts = actualIpAddress.Split('.');
+        Assert.Equal(4, parts.Length);
+        Assert.All(parts, part => Assert.True(int.TryParse(part, out var value) && value >= 0 && value <= 255));
+    }
+
+    [Fact]
+    public async Task UpdateRunnerIpAddressAsync_WithNonExistentVm_ShouldReturnDummyIp()
+    {
+        // Arrange - Use a non-existent VM ID
+        const long nonExistentVmId = 99999;
+
+        // Act
+        var ipAddress = await _fixture.Controller.UpdateRunnerIpAddressAsync(nonExistentVmId);
+
+        // Assert - Should return dummy IP for non-existent VM
+        Assert.Equal("0.0.0.0/0", ipAddress);
+    }
 }

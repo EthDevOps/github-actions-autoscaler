@@ -89,29 +89,6 @@ public class ApiController : Controller
         if(runner == null)
             return Results.NotFound();
 
-        // Update the runner's IP address if using Proxmox and IP is still dummy
-        if (runner.Cloud == "pve" && (string.IsNullOrEmpty(runner.IPv4) || runner.IPv4 == "0.0.0.0/0"))
-        {
-            try
-            {
-                var proxmoxController = serviceProvider.GetService<ProxmoxCloudController>();
-                if (proxmoxController != null)
-                {
-                    var actualIpAddress = await proxmoxController.UpdateRunnerIpAddressAsync(runner.CloudServerId);
-                    if (actualIpAddress != "0.0.0.0/0")
-                    {
-                        runner.IPv4 = actualIpAddress;
-                        await db.SaveChangesAsync();
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                // Log the error but don't fail the provision request
-                SentrySdk.CaptureException(ex);
-                Console.WriteLine($"Failed to update IP for runner {runner.RunnerId}: {ex.Message}");
-            }
-        }
         
         return Results.Content(runner.ProvisionPayload);
 

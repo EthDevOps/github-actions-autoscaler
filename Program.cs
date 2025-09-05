@@ -328,7 +328,7 @@ public class Program
         return Results.StatusCode(201);
     }
 
-    private static async Task<IResult> RunnerStateReportHandler(HttpRequest request, [FromServices] HetznerCloudController cloud, [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue runnerQueue, [FromQuery] string hostname, [FromQuery] string state)
+    private static async Task<IResult> RunnerStateReportHandler(HttpRequest request, [FromServices] IServiceProvider serviceProvider , [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue runnerQueue, [FromQuery] string hostname, [FromQuery] string state)
     {
         var db = new ActionsRunnerContext();
         var runner = await db.Runners.Include(x => x.Lifecycle).Include(x => x.Job).FirstOrDefaultAsync(x => x.Hostname == hostname);
@@ -345,6 +345,32 @@ public class Program
                     Status = RunnerStatus.Provisioned,
                     EventTimeUtc = DateTime.UtcNow
                 });
+                
+                // Update the runner's IP address if using Proxmox and IP is still dummy
+                if (runner.Cloud == "pve" && (string.IsNullOrEmpty(runner.IPv4) || runner.IPv4 == "0.0.0.0/0"))
+                {
+                    try
+                    {
+                        var proxmoxController = serviceProvider.GetService<ProxmoxCloudController>();
+                        if (proxmoxController != null)
+                        {
+                            var actualIpAddress = await proxmoxController.UpdateRunnerIpAddressAsync(runner.CloudServerId);
+                            if (actualIpAddress != "0.0.0.0/0")
+                            {
+                                runner.IPv4 = actualIpAddress;
+                                await db.SaveChangesAsync();
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        // Log the error but don't fail the provision request
+                        SentrySdk.CaptureException(ex);
+                        Console.WriteLine($"Failed to update IP for runner {runner.RunnerId}: {ex.Message}");
+                    }
+                }
+                
+                
                 await db.SaveChangesAsync();
                 break;
             case "error":

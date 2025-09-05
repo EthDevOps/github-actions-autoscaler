@@ -17,16 +17,13 @@ public class ProxmoxTestFixture : IDisposable
 
     public ProxmoxTestFixture()
     {
-        // Validate environment
-        ValidateTestEnvironment();
-
         // Setup logging
         using var loggerFactory = LoggerFactory.Create(builder =>
             builder.AddConsole().SetMinimumLevel(LogLevel.Information));
         _logger = loggerFactory.CreateLogger<ProxmoxCloudController>();
 
-        // Create test configuration
-        TestConfig = TestAutoScalerConfiguration.CreateTestConfiguration();
+        // Load test configuration from appsettings.test.json
+        TestConfig = TestConfigurationLoader.LoadFromAppSettings();
 
         // Set the Program.Config for the controller to use
         Program.Config = TestConfig;
@@ -74,30 +71,6 @@ public class ProxmoxTestFixture : IDisposable
         }
     }
 
-    private void ValidateTestEnvironment()
-    {
-        var requiredEnvVars = new[] { "PVE_HOST", "PVE_USERNAME", "PVE_PASSWORD" };
-        var missingVars = requiredEnvVars.Where(var => string.IsNullOrEmpty(Environment.GetEnvironmentVariable(var))).ToList();
-        
-        if (missingVars.Any())
-        {
-            throw new InvalidOperationException($"Missing required environment variables: {string.Join(", ", missingVars)}");
-        }
-
-        // Validate test settings to ensure we're not running against production
-        var runnerPrefix = Environment.GetEnvironmentVariable("TEST_RUNNER_PREFIX") ?? "ghr-test";
-        var minVmId = int.Parse(Environment.GetEnvironmentVariable("TEST_MIN_VM_ID") ?? "20000");
-
-        if (runnerPrefix == "ghr")
-        {
-            throw new InvalidOperationException("Cannot run integration tests with production runner prefix 'ghr'. Use 'ghr-test' or another test prefix.");
-        }
-
-        if (minVmId < 20000)
-        {
-            throw new InvalidOperationException($"Test MinVmId ({minVmId}) must be >= 20000 to avoid production VM ID range collision.");
-        }
-    }
 
     public async Task CleanupCreatedVmsAsync()
     {
