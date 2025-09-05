@@ -351,8 +351,8 @@ public class Program
                 {
                     try
                     {
-                        var proxmoxController = serviceProvider.GetService<ProxmoxCloudController>();
-                        if (proxmoxController != null)
+                        var cloudControllers = serviceProvider.GetServices<ICloudController>();
+                        if (cloudControllers.FirstOrDefault(x => x.CloudIdentifier == "pve") is ProxmoxCloudController proxmoxController)
                         {
                             var actualIpAddress = await proxmoxController.UpdateRunnerIpAddressAsync(runner.CloudServerId);
                             if (actualIpAddress != "0.0.0.0/0")
