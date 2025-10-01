@@ -171,23 +171,45 @@ public class PoolManager : BackgroundService
 
         if (oldRunnerIds.Count > 0)
         {
+            _logger.LogInformation($"Removing {oldRunnerIds.Count} runners older than 30 days from database");
+
+            // Delete RunnerLifecycles first (they reference runners)
+            var oldLifecycles = await db.RunnerLifecycles.Where(rl => oldRunnerIds.Contains(rl.RunnerId)).ToListAsync();
+            db.RunnerLifecycles.RemoveRange(oldLifecycles);
+            await db.SaveChangesAsync();
+
+            // Break circular dependencies by nulling out foreign keys
             var oldRunners = await db.Runners.Where(r => oldRunnerIds.Contains(r.RunnerId)).ToListAsync();
-            _logger.LogInformation($"Removing {oldRunners.Count} runners older than 30 days from database");
+            var oldJobs = await db.Jobs.Where(j => oldRunnerIds.Contains(j.RunnerId.Value)).ToListAsync();
+
+            // Null out the foreign keys to break circular reference
+            foreach (var runner in oldRunners)
+            {
+                runner.JobId = null;
+            }
+            foreach (var job in oldJobs)
+            {
+                job.RunnerId = null;
+            }
+            await db.SaveChangesAsync();
+
+            // Now delete the runners and jobs
             db.Runners.RemoveRange(oldRunners);
+            db.Jobs.RemoveRange(oldJobs);
+            await db.SaveChangesAsync();
         }
 
-        // Remove old jobs - only remove completed jobs older than 30 days
-        var oldJobs = await db.Jobs
-            .Where(j => j.CompleteTime < cutoffTime && j.CompleteTime != DateTime.MinValue)
+        // Remove old completed jobs - only remove completed jobs older than 30 days
+        var oldCompletedJobs = await db.Jobs
+            .Where(j => j.CompleteTime < cutoffTime && j.CompleteTime != DateTime.MinValue && j.RunnerId == null)
             .ToListAsync();
 
-        if (oldJobs.Count > 0)
+        if (oldCompletedJobs.Count > 0)
         {
-            _logger.LogInformation($"Removing {oldJobs.Count} jobs older than 30 days from database");
-            db.Jobs.RemoveRange(oldJobs);
+            _logger.LogInformation($"Removing {oldCompletedJobs.Count} completed jobs older than 30 days from database");
+            db.Jobs.RemoveRange(oldCompletedJobs);
+            await db.SaveChangesAsync();
         }
-
-        await db.SaveChangesAsync();
     }
 
     private async Task CheckForStuckRunners(List<GithubTargetConfiguration> targetConfig)
