@@ -161,20 +161,24 @@ public class PoolManager : BackgroundService
 
         var cutoffTime = DateTime.UtcNow - TimeSpan.FromDays(30);
 
-        // Remove old runners
-        var oldRunners = await db.Runners
-            .Where(r => r.CreatedTime < cutoffTime)
+        // Remove old runners - find runners where their earliest lifecycle event is older than 30 days
+        var oldRunnerIds = await db.RunnerLifecycles
+            .GroupBy(rl => rl.RunnerId)
+            .Select(g => new { RunnerId = g.Key, OldestEvent = g.Min(rl => rl.EventTimeUtc) })
+            .Where(r => r.OldestEvent < cutoffTime)
+            .Select(r => r.RunnerId)
             .ToListAsync();
 
-        if (oldRunners.Count > 0)
+        if (oldRunnerIds.Count > 0)
         {
+            var oldRunners = await db.Runners.Where(r => oldRunnerIds.Contains(r.RunnerId)).ToListAsync();
             _logger.LogInformation($"Removing {oldRunners.Count} runners older than 30 days from database");
             db.Runners.RemoveRange(oldRunners);
         }
 
-        // Remove old jobs
+        // Remove old jobs - only remove completed jobs older than 30 days
         var oldJobs = await db.Jobs
-            .Where(j => j.CompleteTime < cutoffTime)
+            .Where(j => j.CompleteTime < cutoffTime && j.CompleteTime != DateTime.MinValue)
             .ToListAsync();
 
         if (oldJobs.Count > 0)
