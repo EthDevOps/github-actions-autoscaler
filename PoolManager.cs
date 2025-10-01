@@ -104,6 +104,8 @@ public class PoolManager : BackgroundService
                 await StartPoolRunners(targetConfig);
                 await CheckForStuckJobs(targetConfig);
 
+                await CleanupDatabase();
+
                 foreach (var ban in _bannedClouds.ToList())
                 {
                     if (ban.UnbanTime < DateTime.UtcNow)
@@ -151,6 +153,37 @@ public class PoolManager : BackgroundService
 
             await Task.Delay(250, stoppingToken);
         }
+    }
+
+    private async Task CleanupDatabase()
+    {
+        await using var db = new ActionsRunnerContext();
+
+        var cutoffTime = DateTime.UtcNow - TimeSpan.FromDays(30);
+
+        // Remove old runners
+        var oldRunners = await db.Runners
+            .Where(r => r.CreatedTime < cutoffTime)
+            .ToListAsync();
+
+        if (oldRunners.Count > 0)
+        {
+            _logger.LogInformation($"Removing {oldRunners.Count} runners older than 30 days from database");
+            db.Runners.RemoveRange(oldRunners);
+        }
+
+        // Remove old jobs
+        var oldJobs = await db.Jobs
+            .Where(j => j.CompleteTime < cutoffTime)
+            .ToListAsync();
+
+        if (oldJobs.Count > 0)
+        {
+            _logger.LogInformation($"Removing {oldJobs.Count} jobs older than 30 days from database");
+            db.Jobs.RemoveRange(oldJobs);
+        }
+
+        await db.SaveChangesAsync();
     }
 
     private async Task CheckForStuckRunners(List<GithubTargetConfiguration> targetConfig)
