@@ -490,6 +490,13 @@ public class PoolManager : BackgroundService
                 {
                     _logger.LogWarning($"GHjob for {stuckJob.JobId} is null");
                 }
+                else if (ghJob.Status == "completed")
+                {
+                    _logger.LogWarning($"GHjob status for {stuckJob.JobId} is {ghJob.Status} - Marking job accordingly");
+                    stuckJob.State = JobState.Completed;
+                    stuckJob.CompleteTime = DateTime.UtcNow;
+                    await db.SaveChangesAsync();
+                }
                 else if (ghJob.Status != "queued")
                 {
                     _logger.LogWarning($"GHjob status for {stuckJob.JobId} is {ghJob.Status}");
