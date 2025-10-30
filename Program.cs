@@ -399,7 +399,6 @@ public class Program
                 }
                 else
                 {
-
                     Runner newRunner = new()
                     {
                         Size = runner.Size,
@@ -651,19 +650,6 @@ public class Program
             return;
         }
 
-        string runnerToken = targetType switch
-        {
-            TargetType.Organization => await GitHubApi.GetRunnerTokenForOrg(githubToken, orgName),
-            TargetType.Repository => await GitHubApi.GetRunnerTokenForRepo(githubToken, repoName),
-            _ => throw new ArgumentOutOfRangeException(nameof(targetType), targetType, null)
-        };
-            
-        if (String.IsNullOrEmpty(runnerToken))
-        {
-            logger.LogError("Unable to get new runner token. aborting.");
-            return;
-        }
-
         string owner = targetType switch
         {
             TargetType.Organization => orgName,
@@ -716,7 +702,6 @@ public class Program
         
         poolMgr.CreateTasks.Enqueue(new CreateRunnerTask
         {
-            RunnerToken = runnerToken,
             RepoName = repoName,
             TargetType = targetType,
             RunnerDbId = newRunner.RunnerId

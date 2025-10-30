@@ -4,7 +4,6 @@ namespace GithubActionsOrchestrator.Models;
 
 public record CreateRunnerTask
 {
-    public string RunnerToken { get; set; }
     public int RetryCount { get; set; }
     public TargetType TargetType { get; set; }
     public string RepoName { get; set; }

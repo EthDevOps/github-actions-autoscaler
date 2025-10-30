@@ -134,10 +134,53 @@ public class PoolManager : BackgroundService
                         await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
                     }
                 }
-                await Task.Delay(TimeSpan.FromMilliseconds(500), stoppingToken);
+                await Task.Delay(TimeSpan.FromMilliseconds(200), stoppingToken);
+            }
+            
+            // Process creation tasks in parallel with delay between starts
+            var runningTasks = new List<Task>();
+            var lastTaskStartTime = DateTime.UtcNow;
+
+            while (runningTasks.Count < Program.Config.ParallelOperations && _queues.CreateTasks.TryDequeue(out CreateRunnerTask task))
+                
+            {
+                if (task == null) continue;
+
+                // Ensure 500ms spacing between task starts
+                var timeSinceLastStart = DateTime.UtcNow - lastTaskStartTime;
+                if (timeSinceLastStart < TimeSpan.FromMilliseconds(500))
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(500) - timeSinceLastStart, stoppingToken);
+                }
+
+                // Start new task and add to running tasks
+                runningTasks.Add(Task.Run(async () =>
+                {
+                    bool success = await CreateRunner(task);
+                    if (!success)
+                    {
+                        _logger.LogWarning($"Encountered a problem creating runner for {task.RepoName}.");
+                    }
+                }, stoppingToken));
+
+                lastTaskStartTime = DateTime.UtcNow;
             }
 
-            if (_queues.CreateTasks.TryDequeue(out CreateRunnerTask task))
+            // Wait for all running tasks to complete
+            if (runningTasks.Any())
+            {
+                try
+                {
+                    await Task.WhenAll(runningTasks);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError($"Error while processing creation tasks: {ex.Message}");
+                }
+            }
+
+            
+            /*if (_queues.CreateTasks.TryDequeue(out CreateRunnerTask task))
             {
                 if (task != null)
                 {
@@ -149,7 +192,7 @@ public class PoolManager : BackgroundService
                         await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
                     }
                 }
-            }
+            }*/
 
             await Task.Delay(250, stoppingToken);
         }
@@ -164,8 +207,8 @@ public class PoolManager : BackgroundService
         // Remove old runners - find runners where their earliest lifecycle event is older than 30 days
         var oldRunnerIds = await db.RunnerLifecycles
             .GroupBy(rl => rl.RunnerId)
-            .Select(g => new { RunnerId = g.Key, OldestEvent = g.Min(rl => rl.EventTimeUtc) })
-            .Where(r => r.OldestEvent < cutoffTime)
+            .Select(g => new { RunnerId = g.Key, LatestEvent = g.Max(rl => rl.EventTimeUtc) })
+            .Where(r => r.LatestEvent < cutoffTime)
             .Select(r => r.RunnerId)
             .ToListAsync();
 
@@ -355,13 +398,7 @@ public class PoolManager : BackgroundService
         foreach (GithubTargetConfiguration owner in targetConfig)
         {
             _logger.LogInformation($"Checking pool runners for {owner.Name}");
-            string runnerToken = owner.Target switch
-            {
-                TargetType.Repository => await GitHubApi.GetRunnerTokenForRepo(owner.GitHubToken, owner.Name),
-                TargetType.Organization => await GitHubApi.GetRunnerTokenForOrg(owner.GitHubToken, owner.Name),
-                _ => throw new ArgumentOutOfRangeException()
-            };
-                
+
             List<Runner> existingRunners = await db.Runners.Where(x => x.Owner == owner.Name && x.IsOnline).ToListAsync();
             
             foreach (Pool pool in owner.Pools)
@@ -403,11 +440,9 @@ public class PoolManager : BackgroundService
                     
                     _queues.CreateTasks.Enqueue(new CreateRunnerTask
                     {
-                        RunnerToken = runnerToken,
                         RepoName = owner.Name,
                         TargetType = owner.Target,
-                        RunnerDbId = newRunner.RunnerId,
-                        
+                        RunnerDbId = newRunner.RunnerId
                     }); 
                     _logger.LogInformation($"[{i+1}/{missingCt}] Queued {pool.Size} runner for {owner.Name}");
                 }
@@ -471,12 +506,6 @@ public class PoolManager : BackgroundService
                 continue;
             }
 
-            string runnerToken = owner.Target switch
-            {
-                TargetType.Repository => await GitHubApi.GetRunnerTokenForRepo(owner.GitHubToken, owner.Name),
-                TargetType.Organization => await GitHubApi.GetRunnerTokenForOrg(owner.GitHubToken, owner.Name),
-                _ => throw new ArgumentOutOfRangeException()
-            };
             var profile = stuckJob.RequestedProfile ?? "default";
             string arch = Program.Config.Sizes.FirstOrDefault(x => x.Name == stuckJob.RequestedSize)?.Arch;
             Runner newRunner = new()
@@ -507,7 +536,6 @@ public class PoolManager : BackgroundService
            
             _queues.CreateTasks.Enqueue(new CreateRunnerTask
             {
-                RunnerToken = runnerToken,
                 RepoName = stuckJob.Repository,
                 TargetType = owner.Target,
                 RunnerDbId = newRunner.RunnerId,
@@ -859,6 +887,27 @@ public class PoolManager : BackgroundService
         
         var cc = _cc.First(x => x.CloudIdentifier == selectedProvider.Cloud);
 
+        // Generate fresh runner token just before creating the runner
+        var targetConfig = Program.Config.TargetConfigs.FirstOrDefault(x => x.Name == runner.Owner);
+        if (targetConfig == null)
+        {
+            _logger.LogError($"Unable to find target configuration for owner: {runner.Owner}");
+            return false;
+        }
+
+        string runnerToken = rt.TargetType switch
+        {
+            TargetType.Repository => await GitHubApi.GetRunnerTokenForRepo(targetConfig.GitHubToken, targetConfig.Name),
+            TargetType.Organization => await GitHubApi.GetRunnerTokenForOrg(targetConfig.GitHubToken, targetConfig.Name),
+            _ => throw new ArgumentOutOfRangeException()
+        };
+
+        if (string.IsNullOrEmpty(runnerToken))
+        {
+            _logger.LogError($"Unable to generate runner token for {runner.Owner}");
+            return false;
+        }
+
         try
         {
             string targetName = rt.TargetType switch
@@ -879,7 +928,7 @@ public class PoolManager : BackgroundService
 
                 try
                 {
-                    newRunner = await cc.CreateNewRunner(runner.Arch, runner.Size, rt.RunnerToken, targetName, runner.IsCustom, runner.Profile);
+                    newRunner = await cc.CreateNewRunner(runner.Arch, runner.Size, runnerToken, targetName, runner.IsCustom, runner.Profile);
                     _logger.LogInformation($"New Runner {newRunner.Name} [{runner.Size} on {runner.Arch}] entering pool for {targetName}.");
                     MachineCreatedCount.Labels(runner.Owner, runner.Size).Inc();
 
@@ -912,6 +961,8 @@ public class PoolManager : BackgroundService
                 }
             }
             await db.SaveChangesAsync();
+
+            _queues.CreatedRunners.TryAdd(runner.Hostname, rt);
             
             return true;
         }

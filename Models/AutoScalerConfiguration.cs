@@ -53,4 +53,5 @@ public class AutoScalerConfiguration
     public int PveTemplate { get; set; }
     
     public int MinVmId { get; set; } = 5000;
+    public int ParallelOperations { get; set; } = 10;
 }
