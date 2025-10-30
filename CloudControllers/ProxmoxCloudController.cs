@@ -313,53 +313,54 @@ public class ProxmoxCloudController : BaseCloudController, ICloudController
 
         int sourceVmId = _pveTemplate;
 
-        await _semaphore.WaitAsync();
         string macaddress = string.Empty;
         int newVmId;
+        string selectedNode = _mainNode;
 
+        // Try to find the node with the least runners for load balancing
         try
         {
-            string selectedNode = _mainNode;
-            
-            try
+            var resourcesResponse = await MakeApiCallAsync("/cluster/resources?type=vm");
+            var resourcesJson = JsonSerializer.Deserialize<JsonElement>(resourcesResponse);
+
+            if (resourcesJson.TryGetProperty("data", out var dataArray))
             {
-                var resourcesResponse = await MakeApiCallAsync("/cluster/resources?type=vm");
-                var resourcesJson = JsonSerializer.Deserialize<JsonElement>(resourcesResponse);
-                
-                if (resourcesJson.TryGetProperty("data", out var dataArray))
-                {
-                    var resources = dataArray.EnumerateArray().ToList();
-                    var availableNodes = resources
-                        .Where(r => r.TryGetProperty("node", out var _))
-                        .Select(r => r.GetProperty("node").GetString())
-                        .Distinct().ToList();
+                var resources = dataArray.EnumerateArray().ToList();
+                var availableNodes = resources
+                    .Where(r => r.TryGetProperty("node", out var _))
+                    .Select(r => r.GetProperty("node").GetString())
+                    .Distinct().ToList();
 
-                    var vmCountByNode = availableNodes
-                        .Select(node => new 
-                        { 
-                            Node = node, 
-                            Count = resources.Count(r => 
-                                r.TryGetProperty("node", out var nodeElement) && 
-                                r.TryGetProperty("name", out var nameElement) &&
-                                nodeElement.GetString() == node &&
-                                nameElement.GetString().StartsWith(Program.Config.RunnerPrefix))
-                        })
-                        .ToList();
+                var vmCountByNode = availableNodes
+                    .Select(node => new
+                    {
+                        Node = node,
+                        Count = resources.Count(r =>
+                            r.TryGetProperty("node", out var nodeElement) &&
+                            r.TryGetProperty("name", out var nameElement) &&
+                            nodeElement.GetString() == node &&
+                            nameElement.GetString().StartsWith(Program.Config.RunnerPrefix))
+                    })
+                    .ToList();
 
-                    var nodeWithLeastRunners = vmCountByNode.OrderBy(x => x.Count).First();
-                    selectedNode = nodeWithLeastRunners.Node;
-                }
+                var nodeWithLeastRunners = vmCountByNode.OrderBy(x => x.Count).First();
+                selectedNode = nodeWithLeastRunners.Node;
             }
-            catch (Exception ex)
+        }
+        catch (Exception ex)
+        {
+            SentrySdk.CaptureException(ex, scope =>
             {
-                SentrySdk.CaptureException(ex, scope =>
-                {
-                    scope.SetTag("csp", "pve");
-                });
-                _logger.LogError(ex, "Unable to get available nodes - using main node");
-                await Task.Delay(500);
-            }
+                scope.SetTag("csp", "pve");
+            });
+            _logger.LogError(ex, "Unable to get available nodes - using main node");
+            await Task.Delay(500);
+        }
 
+        // Serialize VM cloning to prevent VMID collisions
+        await _semaphore.WaitAsync();
+        try
+        {
             newVmId = await GetNextAvailableVmIdAsync();
 
             var cloneData = new FormUrlEncodedContent(new[]
@@ -372,87 +373,87 @@ public class ProxmoxCloudController : BaseCloudController, ICloudController
 
             var cloneResponse = await MakeApiCallAsync($"/nodes/{_mainNode}/qemu/{sourceVmId}/clone", HttpMethod.Post, cloneData);
             var cloneJson = JsonSerializer.Deserialize<JsonElement>(cloneResponse);
-            
+
             if (cloneJson.TryGetProperty("data", out var cloneTaskId))
             {
                 await WaitForTaskCompletionAsync(cloneTaskId.GetString(), _mainNode);
-            }
-
-            var poolData = new FormUrlEncodedContent(new[]
-            {
-                new KeyValuePair<string, string>("vms", newVmId.ToString())
-            });
-            await MakeApiCallAsync("/pools/github-runners", HttpMethod.Put, poolData);
-
-            if (_mainNode != selectedNode)
-            {
-                var migrateData = new FormUrlEncodedContent(new[]
-                {
-                    new KeyValuePair<string, string>("target", selectedNode)
-                });
-                
-                var migrateResponse = await MakeApiCallAsync($"/nodes/{_mainNode}/qemu/{newVmId}/migrate", HttpMethod.Post, migrateData);
-                var migrateJson = JsonSerializer.Deserialize<JsonElement>(migrateResponse);
-                
-                if (migrateJson.TryGetProperty("data", out var migrateTaskId))
-                {
-                    await WaitForTaskCompletionAsync(migrateTaskId.GetString(), _mainNode);
-                }
-            }
-
-            var match = Regex.Match(machineType.VmType, @"(\d+)c(\d+)g");
-            int cores = 2;
-            int memory = 2;
-            
-            if (match.Success && match.Groups.Count >= 3)
-            {
-                if (int.TryParse(match.Groups[1].Value, out int parsedCores))
-                {
-                    cores = parsedCores;
-                }
-
-                if (int.TryParse(match.Groups[2].Value, out int parsedMemory))
-                {
-                    memory = parsedMemory;
-                }
-            }
-
-            var configData = new FormUrlEncodedContent(new[]
-            {
-                new KeyValuePair<string, string>("cores", cores.ToString()),
-                new KeyValuePair<string, string>("memory", (memory * 1024).ToString())
-            });
-
-            await MakeApiCallAsync($"/nodes/{selectedNode}/qemu/{newVmId}/config", HttpMethod.Put, configData);
-
-            var vmConfigResponse = await MakeApiCallAsync($"/nodes/{selectedNode}/qemu/{newVmId}/config");
-            var vmConfigJson = JsonSerializer.Deserialize<JsonElement>(vmConfigResponse);
-            
-            if (vmConfigJson.TryGetProperty("data", out var configData2) && 
-                configData2.TryGetProperty("net0", out var net0Element))
-            {
-                string netConfig = net0Element.GetString();
-                
-                Regex regex = new("virtio=([0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2})", RegexOptions.IgnoreCase);
-                Match macMatch = regex.Match(netConfig);
-
-                if (macMatch.Success)
-                {
-                    macaddress = macMatch.Groups[1].Value;
-                }
-            }
-            
-            var startResponse = await MakeApiCallAsync($"/nodes/{selectedNode}/qemu/{newVmId}/status/start", HttpMethod.Post);
-            var startJson = JsonSerializer.Deserialize<JsonElement>(startResponse);
-            
-            if (startJson.TryGetProperty("data", out var startTaskId))
-            {
-                await WaitForTaskCompletionAsync(startTaskId.GetString(), selectedNode);
             }
         }
         finally
         {
             _semaphore.Release();
+        }
+
+        var poolData = new FormUrlEncodedContent(new[]
+        {
+            new KeyValuePair<string, string>("vms", newVmId.ToString())
+        });
+        await MakeApiCallAsync("/pools/github-runners", HttpMethod.Put, poolData);
+
+        if (_mainNode != selectedNode)
+        {
+            var migrateData = new FormUrlEncodedContent(new[]
+            {
+                new KeyValuePair<string, string>("target", selectedNode)
+            });
+
+            var migrateResponse = await MakeApiCallAsync($"/nodes/{_mainNode}/qemu/{newVmId}/migrate", HttpMethod.Post, migrateData);
+            var migrateJson = JsonSerializer.Deserialize<JsonElement>(migrateResponse);
+
+            if (migrateJson.TryGetProperty("data", out var migrateTaskId))
+            {
+                await WaitForTaskCompletionAsync(migrateTaskId.GetString(), _mainNode);
+            }
+        }
+
+        var match = Regex.Match(machineType.VmType, @"(\d+)c(\d+)g");
+        int cores = 2;
+        int memory = 2;
+
+        if (match.Success && match.Groups.Count >= 3)
+        {
+            if (int.TryParse(match.Groups[1].Value, out int parsedCores))
+            {
+                cores = parsedCores;
+            }
+
+            if (int.TryParse(match.Groups[2].Value, out int parsedMemory))
+            {
+                memory = parsedMemory;
+            }
+        }
+
+        var configData = new FormUrlEncodedContent(new[]
+        {
+            new KeyValuePair<string, string>("cores", cores.ToString()),
+            new KeyValuePair<string, string>("memory", (memory * 1024).ToString())
+        });
+
+        await MakeApiCallAsync($"/nodes/{selectedNode}/qemu/{newVmId}/config", HttpMethod.Put, configData);
+
+        var vmConfigResponse = await MakeApiCallAsync($"/nodes/{selectedNode}/qemu/{newVmId}/config");
+        var vmConfigJson = JsonSerializer.Deserialize<JsonElement>(vmConfigResponse);
+
+        if (vmConfigJson.TryGetProperty("data", out var configData2) &&
+            configData2.TryGetProperty("net0", out var net0Element))
+        {
+            string netConfig = net0Element.GetString();
+
+            Regex regex = new("virtio=([0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2})", RegexOptions.IgnoreCase);
+            Match macMatch = regex.Match(netConfig);
+
+            if (macMatch.Success)
+            {
+                macaddress = macMatch.Groups[1].Value;
+            }
+        }
+
+        var startResponse = await MakeApiCallAsync($"/nodes/{selectedNode}/qemu/{newVmId}/status/start", HttpMethod.Post);
+        var startJson = JsonSerializer.Deserialize<JsonElement>(startResponse);
+
+        if (startJson.TryGetProperty("data", out var startTaskId))
+        {
+            await WaitForTaskCompletionAsync(startTaskId.GetString(), selectedNode);
         }
 
         string customEnv = isCustom ? "1" : "0";
