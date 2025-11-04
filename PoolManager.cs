@@ -119,23 +119,20 @@ public class PoolManager : BackgroundService
             }
 
             int deleteQueueSize = _queues.DeleteTasks.Count;
+            var deletionTasks = new List<Task>();
             // Run down the deletion queue in completion to potentially free up resources on HTZ cloud
             for (int i = 0; i < deleteQueueSize; i++)
             {
                 if (!_queues.DeleteTasks.TryDequeue(out DeleteRunnerTask dtask)) continue;
                 if (dtask != null)
                 {
-                    bool success = await DeleteRunner(dtask);
-                    if (!success)
-                    {
-                        // Deletion didn't succeed. Let's hold processing runners for a minute
-                        _logger.LogWarning(
-                            "Encountered a problem deleting runners. Will hold queue processing for 10 seconds.");
-                        await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
-                    }
+                    var deletionTask = DeleteRunner(dtask);
+                    deletionTasks.Add(deletionTask);
+                    await Task.Delay(250, stoppingToken);
                 }
-                await Task.Delay(TimeSpan.FromMilliseconds(200), stoppingToken);
             }
+
+            Task.WaitAll(deletionTasks, stoppingToken);
             
             // Process creation tasks in parallel with delay between starts
             var runningTasks = new List<Task>();

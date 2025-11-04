@@ -491,9 +491,6 @@ public class ProxmoxCloudController : BaseCloudController, ICloudController
 
     public async Task DeleteRunner(long serverId)
     {
-        await _semaphore.WaitAsync();
-        try
-        {
             var resourcesResponse = await MakeApiCallAsync("/cluster/resources?type=vm");
             var resourcesJson = JsonSerializer.Deserialize<JsonElement>(resourcesResponse);
             
@@ -538,11 +535,6 @@ public class ProxmoxCloudController : BaseCloudController, ICloudController
             {
                 await WaitForTaskCompletionAsync(destroyTaskId.GetString(), selectedNode);
             }
-        }
-        finally
-        {
-            _semaphore.Release();
-        }
     }
 
     public async Task<List<CspServer>> GetAllServersFromCsp()
