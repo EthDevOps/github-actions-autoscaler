@@ -6,5 +6,6 @@ public enum JobState
     Queued = 1,
     InProgress = 2,
     Completed = 3,
-    Vanished = 4
+    Vanished = 4,
+    Cancelled = 5
 }

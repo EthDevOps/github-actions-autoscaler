@@ -866,7 +866,39 @@ public class PoolManager : BackgroundService
     {
         var db = new ActionsRunnerContext();
         var runner = await db.Runners.Include(x => x.Lifecycle).FirstOrDefaultAsync(x => x.RunnerId == rt.RunnerDbId);
-        
+
+        // Check if this runner creation should be skipped due to job cancellation
+        var key = (runner.Owner, rt.RepoName, runner.Size, runner.Profile, runner.Arch);
+        bool shouldSkip = false;
+
+        _queues.CancelledRunners.AddOrUpdate(
+            key,
+            0,  // If key doesn't exist, don't skip
+            (k, count) =>
+            {
+                if (count > 0)
+                {
+                    shouldSkip = true;
+                    return count - 1;  // Decrement counter
+                }
+                return 0;
+            });
+
+        if (shouldSkip)
+        {
+            _logger.LogInformation($"Skipping runner creation for cancelled job: Owner={runner.Owner}, Repo={rt.RepoName}, Size={runner.Size}, Profile={runner.Profile}, Arch={runner.Arch}");
+
+            runner.Lifecycle.Add(new RunnerLifecycle
+            {
+                Status = RunnerStatus.Cancelled,
+                EventTimeUtc = DateTime.UtcNow,
+                Event = "Runner creation skipped - job was cancelled"
+            });
+
+            await db.SaveChangesAsync();
+            return true;
+        }
+
         // Check if cloud is stable atm
         
         var possibleProviders =

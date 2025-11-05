@@ -306,11 +306,32 @@ public class Program
                     await JobInProgress(workflowJson, logger, jobId, repoName, orgName);
                     break;
                 case "completed":
+                    string conclusion = String.Empty;
+                    if (json.RootElement.TryGetProperty("conclusion", out JsonElement conclusionJson))
+                    {
+                        conclusion = conclusionJson.GetString() ?? string.Empty;
+                    }
+
                     var dbWorkflowComplete = await db.Jobs.FirstOrDefaultAsync(x => x.GithubJobId == jobId);
-                    dbWorkflowComplete.State = JobState.Completed;
                     dbWorkflowComplete.CompleteTime = DateTime.UtcNow;
-                    await db.SaveChangesAsync();
-                    await JobCompleted(logger, jobId, poolMgr, repoName, orgName, workflowJson);
+                    bool wasCancelled = false;
+                    switch (conclusion)
+                    {
+                        case "cancelled":
+                            dbWorkflowComplete.State = JobState.Cancelled;
+                            await db.SaveChangesAsync();
+                            wasCancelled = true;
+                            
+                            // somehow clean runners from creation queue if not started yet.
+                            
+                            break;
+                        default:
+                            dbWorkflowComplete.State = JobState.Completed;
+                            await db.SaveChangesAsync();
+                            break;
+                    }
+
+                    await JobCompleted(logger, jobId, poolMgr, repoName, orgName, workflowJson, wasCancelled);
                     break;
                 default:
                     logger.LogWarning("Unknown action. Ignoring");
@@ -488,7 +509,7 @@ public class Program
         return Results.StatusCode(201);
     }
 
-    private static async Task JobCompleted(ILogger<Program> logger, long jobId, RunnerQueue poolMgr, string repoName, string orgName, JsonElement workflowJson)
+    private static async Task JobCompleted(ILogger<Program> logger, long jobId, RunnerQueue poolMgr, string repoName, string orgName, JsonElement workflowJson, bool wasCancelled)
     {
         var db = new ActionsRunnerContext();
         var job = await db.Jobs
@@ -523,7 +544,25 @@ public class Program
             logger.LogError($"No VM on record for JobID: {jobId}. Trying to re-link to {runnerName}.");
             jobRunner = await db.LinkJobToRunner(jobId, runnerName);
 
-            if (jobRunner == null)
+            if (wasCancelled && jobRunner == null)
+            {
+                // job was cancelled before a runner was picked by the job
+                // it's either still in the creation queue or it is still provisioning
+
+                // Get arch from the requested size
+                string arch = Config.Sizes.FirstOrDefault(x => x.Name == job.RequestedSize)?.Arch ?? "x64";
+
+                // Build the cancellation key
+                var key = (job.Owner, job.Repository, job.RequestedSize, job.RequestedProfile, arch);
+
+                // Increment the cancelled runners counter
+                int count = poolMgr.CancelledRunners.AddOrUpdate(key, 1, (k, currentCount) => currentCount + 1);
+
+                logger.LogInformation($"Registered cancelled job {jobId} for {job.Owner}/{job.Repository} size={job.RequestedSize} profile={job.RequestedProfile} arch={arch}. Counter now at {count}.");
+
+                return;
+            }
+            else if (jobRunner == null)
             {
                 logger.LogError("Unable to link runner. aborting");
                 return;
