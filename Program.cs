@@ -40,6 +40,10 @@ public class Program
         .CreateCounter("github_autoscaler_total_machine_time", "Number of seconds machines were alive",
             labelNames: ["org", "size"]);
 
+    private static readonly Counter CancelledJobCount = Metrics
+        .CreateCounter("github_autoscaler_jobs_cancelled", "Number of jobs cancelled before runner assignment",
+            labelNames: ["org", "repo", "size", "profile", "arch"]);
+
     public static void Main(string[] args)
     {
         //Init GlitchTip
@@ -557,6 +561,9 @@ public class Program
 
                 // Increment the cancelled runners counter
                 int count = poolMgr.CancelledRunners.AddOrUpdate(key, 1, (k, currentCount) => currentCount + 1);
+
+                // Increment Prometheus counter
+                CancelledJobCount.Labels(job.Owner, job.Repository, job.RequestedSize, job.RequestedProfile ?? "default", arch).Inc();
 
                 logger.LogInformation($"Registered cancelled job {jobId} for {job.Owner}/{job.Repository} size={job.RequestedSize} profile={job.RequestedProfile} arch={arch}. Counter now at {count}.");
 
