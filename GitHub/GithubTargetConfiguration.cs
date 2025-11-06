@@ -7,10 +7,15 @@ public class GithubTargetConfiguration
 {
     [JsonConverter(typeof(EnvironmentAwareJsonConverter<string>))]
     public string Name { get; set; }
-    
+
     [JsonConverter(typeof(EnvironmentAwareJsonConverter<string>))]
     public string GitHubToken { get; set; }
-    
+
     public List<Pool> Pools { get; set; }
     public TargetType Target { get; set; }
+
+    /// <summary>
+    /// Maximum number of runners allowed for this org/repo. If null or not set, unlimited runners are allowed.
+    /// </summary>
+    public int? RunnerQuota { get; set; }
 }

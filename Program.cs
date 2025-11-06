@@ -702,8 +702,57 @@ public class Program
             TargetType.Repository => repoName,
             _ => throw new ArgumentOutOfRangeException(nameof(targetType), targetType, null)
         };
+
+        // Get the target configuration to check quota
+        var targetConfig = targetType switch
+        {
+            TargetType.Organization => Config.TargetConfigs.FirstOrDefault(x => x.Name == orgName && x.Target == TargetType.Organization),
+            TargetType.Repository => Config.TargetConfigs.FirstOrDefault(x => x.Name == repoName && x.Target == TargetType.Repository),
+            _ => throw new ArgumentOutOfRangeException(nameof(targetType), targetType, null)
+        };
+
         // Record runner to database
         await using var db = new ActionsRunnerContext();
+
+        // Check if quota is reached before creating runner
+        if (targetConfig?.RunnerQuota.HasValue == true)
+        {
+            // Count all runners that are actively consuming resources (not deleted/failed/cancelled)
+            // This includes: CreationQueued, Created, Provisioned, Processing (states 1-4)
+            var runners = await db.Runners
+                .Include(x => x.Lifecycle)
+                .Where(x => x.Owner == owner)
+                .ToListAsync();
+
+            int currentRunnerCount = runners.Count(x => x.LastState < RunnerStatus.DeletionQueued);
+
+            if (currentRunnerCount >= targetConfig.RunnerQuota.Value)
+            {
+                logger.LogWarning($"Runner quota reached for {owner}: {currentRunnerCount}/{targetConfig.RunnerQuota.Value} (includes queued/provisioning runners). Job will be throttled.");
+
+                // Record the job in the database as Throttled
+                if (jobId > 0)
+                {
+                    Job throttledJob = new()
+                    {
+                        GithubJobId = jobId,
+                        Repository = repoName,
+                        Owner = owner,
+                        State = JobState.Throttled,
+                        QueueTime = DateTime.UtcNow,
+                        JobUrl = jobUrl,
+                        Orphan = false,
+                        RequestedProfile = profileName,
+                        RequestedSize = size
+                    };
+                    await db.Jobs.AddAsync(throttledJob);
+                    await db.SaveChangesAsync();
+                }
+
+                return;
+            }
+        }
+
         if (jobId > 0)
         {
             Job queuedJob = new()

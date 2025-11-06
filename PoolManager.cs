@@ -27,6 +27,8 @@ public class PoolManager : BackgroundService
         .CreateGauge("github_autoscaler_csp_runners", "Number of runners currently on the CSP", labelNames: ["csp"]);
     private static readonly Gauge StuckJobsCount = Metrics
         .CreateGauge("github_autoscaler_job_stuck", "Number of jobs not picked up after 15min");
+    private static readonly Gauge ThrottledJobsCount = Metrics
+        .CreateGauge("github_autoscaler_job_throttled", "Number of jobs waiting due to runner quota limit");
     private static readonly Gauge QueuedJobsCount = Metrics
         .CreateGauge("github_autoscaler_job_queued", "Total Number of jobs queued");
     private static readonly Gauge CompletedJobsCount = Metrics
@@ -334,11 +336,17 @@ public class PoolManager : BackgroundService
         // Grab job state counts
         var db = new ActionsRunnerContext();
         var stuckTime = DateTime.UtcNow - TimeSpan.FromMinutes(15);
+
+        // Count stuck jobs (queued for >15min, excluding throttled jobs)
         var stuckJobs = await db.Jobs.CountAsync(x => x.State == JobState.Queued && x.RunnerId == null && x.QueueTime < stuckTime);
         StuckJobsCount.Set(stuckJobs);
 
+        // Count throttled jobs
+        var throttledJobs = await db.Jobs.CountAsync(x => x.State == JobState.Throttled);
+        ThrottledJobsCount.Set(throttledJobs);
+
         var jobsByState = await db.Jobs.GroupBy(x => x.State).Select(x => new { x.Key, Count = x.Count() }).ToListAsync();
-       
+
         QueuedJobsCount.Set(jobsByState.FirstOrDefault(x => x.Key == JobState.Queued)?.Count ?? 0);
         CompletedJobsCount.Set(jobsByState.FirstOrDefault(x => x.Key == JobState.Completed)?.Count ?? 0);
         InProgressJobsCount.Set(jobsByState.FirstOrDefault(x => x.Key == JobState.InProgress)?.Count ?? 0);
@@ -388,6 +396,40 @@ public class PoolManager : BackgroundService
         }
     }
 
+    /// <summary>
+    /// Checks if the runner quota has been reached for the given owner
+    /// </summary>
+    /// <param name="owner">The GitHub target configuration</param>
+    /// <param name="db">Database context</param>
+    /// <returns>True if quota is reached and no more runners should be created, false otherwise</returns>
+    private async Task<bool> IsQuotaReached(GithubTargetConfiguration owner, ActionsRunnerContext db)
+    {
+        // If no quota is set, unlimited runners are allowed
+        if (!owner.RunnerQuota.HasValue)
+        {
+            return false;
+        }
+
+        // Count all runners that are actively consuming resources (not deleted/failed/cancelled)
+        // This includes: CreationQueued, Created, Provisioned, Processing (states 1-4)
+        // Excludes: DeletionQueued, Deleted, Failure, VanishedOnCloud, Cleanup, Cancelled (states 5+)
+        var runners = await db.Runners
+            .Include(x => x.Lifecycle)
+            .Where(x => x.Owner == owner.Name)
+            .ToListAsync();
+
+        int currentRunnerCount = runners.Count(x => x.LastState < RunnerStatus.DeletionQueued);
+
+        bool quotaReached = currentRunnerCount >= owner.RunnerQuota.Value;
+
+        if (quotaReached)
+        {
+            _logger.LogWarning($"Runner quota reached for {owner.Name}: {currentRunnerCount}/{owner.RunnerQuota.Value} (includes queued/provisioning runners)");
+        }
+
+        return quotaReached;
+    }
+
     private async Task StartPoolRunners(List<GithubTargetConfiguration> targetConfig)
     {
         // Start pool runners
@@ -396,19 +438,33 @@ public class PoolManager : BackgroundService
         {
             _logger.LogInformation($"Checking pool runners for {owner.Name}");
 
+            // Check if quota is reached for this owner
+            if (await IsQuotaReached(owner, db))
+            {
+                _logger.LogWarning($"Skipping pool runner creation for {owner.Name} - quota reached");
+                continue;
+            }
+
             List<Runner> existingRunners = await db.Runners.Where(x => x.Owner == owner.Name && x.IsOnline).ToListAsync();
-            
+
             foreach (Pool pool in owner.Pools)
             {
                 int existCt = existingRunners.Count(x => x.Size == pool.Size);
                 int missingCt = pool.NumRunners - existCt;
 
                 string arch = Program.Config.Sizes.FirstOrDefault(x => x.Name == pool.Size)?.Arch;
-                
+
                 _logger.LogInformation($"Checking pool {pool.Size} [{arch}]: Existing={existCt} Requested={pool.NumRunners} Missing={missingCt}");
-                
+
                 for (int i = 0; i < missingCt; i++)
                 {
+                    // Check quota again before each runner creation
+                    if (await IsQuotaReached(owner, db))
+                    {
+                        _logger.LogWarning($"Quota reached while creating pool runners for {owner.Name} - stopping at {i}/{missingCt}");
+                        break;
+                    }
+
                     // Queue VM creation
                     var profile = pool.Profile ?? "default";
                     Runner newRunner = new()
@@ -451,25 +507,56 @@ public class PoolManager : BackgroundService
     {
         var db = new ActionsRunnerContext();
         var stuckTime = DateTime.UtcNow - TimeSpan.FromMinutes(10);
-        var stuckJobs = await db.Jobs.Where(x => x.State == JobState.Queued && x.RunnerId == null && x.QueueTime < stuckTime).ToListAsync();
+
+        // Check both Queued and Throttled jobs that have been waiting >10min without a runner
+        var stuckJobs = await db.Jobs
+            .Where(x => (x.State == JobState.Queued || x.State == JobState.Throttled) && x.RunnerId == null && x.QueueTime < stuckTime)
+            .ToListAsync();
+
         foreach (var stuckJob in stuckJobs)
         {
-            _logger.LogWarning($"Found stuck Job: {stuckJob.JobId} in {stuckJob.Repository}. Starting new runner to compensate...");
-
             var owner = targetConfig.FirstOrDefault(x => x.Name == stuckJob.Owner);
             if (owner == null)
             {
                 _logger.LogError($"Unable to get owner for stuck job. {stuckJob.JobId}");
                 continue;
             }
-            
+
+            // Check if quota is reached
+            bool quotaReached = await IsQuotaReached(owner, db);
+
+            if (quotaReached)
+            {
+                // Mark job as Throttled if it isn't already
+                if (stuckJob.State != JobState.Throttled)
+                {
+                    _logger.LogInformation($"Job {stuckJob.JobId} in {stuckJob.Repository} is throttled due to runner quota limit.");
+                    stuckJob.State = JobState.Throttled;
+                    await db.SaveChangesAsync();
+                }
+                continue;
+            }
+            else
+            {
+                // Quota is available - if job was throttled, move it back to queued
+                if (stuckJob.State == JobState.Throttled)
+                {
+                    _logger.LogInformation($"Quota now available for throttled job {stuckJob.JobId}. Moving to queued state.");
+                    stuckJob.State = JobState.Queued;
+                    await db.SaveChangesAsync();
+                }
+            }
+
+            // Job is genuinely stuck (not due to quota) - create replacement runner
+            _logger.LogWarning($"Found stuck Job: {stuckJob.JobId} in {stuckJob.Repository}. Starting new runner to compensate...");
+
             // Check if there is already a runner in queue to unstuck
             if (_queues.CreateTasks.Any(x => x.IsStuckReplacement && x.StuckJobId == stuckJob.JobId))
             {
                 _logger.LogWarning($"Creating queue already has a task for jobs {stuckJob.JobId}");
                 continue;
             }
-            
+
             int replacementsInQueue =  _queues.CreateTasks.Count(x => x.IsStuckReplacement);
             if (replacementsInQueue > 25)
             {
