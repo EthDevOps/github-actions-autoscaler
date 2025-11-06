@@ -557,7 +557,7 @@ public class PoolManager : BackgroundService
                 continue;
             }
 
-            int replacementsInQueue =  _queues.CreateTasks.Count(x => x.IsStuckReplacement);
+            int replacementsInQueue =  _queues.CreateTasks.CountWhere(x => x.IsStuckReplacement);
             if (replacementsInQueue > 25)
             {
                 _logger.LogWarning($"Creating queue already has {replacementsInQueue} stuck jobs replacements. Not adding more strain.");

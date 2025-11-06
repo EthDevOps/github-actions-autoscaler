@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations.Schema;
+using GithubActionsOrchestrator.Models;
 
 namespace GithubActionsOrchestrator.Database;
 using Microsoft.EntityFrameworkCore;
@@ -10,6 +11,10 @@ public class ActionsRunnerContext()
     public DbSet<Runner> Runners { get; set; }
     public DbSet<Job> Jobs { get; set; }
     public DbSet<RunnerLifecycle> RunnerLifecycles { get; set; }
+    public DbSet<CreateTaskQueue> CreateTaskQueues { get; set; }
+    public DbSet<DeleteTaskQueue> DeleteTaskQueues { get; set; }
+    public DbSet<CreatedRunnersTracking> CreatedRunnersTrackings { get; set; }
+    public DbSet<CancelledRunnersCounter> CancelledRunnersCounters { get; set; }
 
     
     
@@ -29,6 +34,15 @@ public class ActionsRunnerContext()
             .WithOne()
             .HasForeignKey<Job>(j => j.RunnerId)
             .IsRequired(false);
+
+        // Configure CreatedRunnersTracking with Hostname as primary key
+        modelBuilder.Entity<CreatedRunnersTracking>()
+            .HasKey(c => c.Hostname);
+
+        // Configure CancelledRunnersCounter with unique constraint on job specifications
+        modelBuilder.Entity<CancelledRunnersCounter>()
+            .HasIndex(c => new { c.Owner, c.Repository, c.Size, c.Profile, c.Arch })
+            .IsUnique();
     }
 
     public async Task<Runner> LinkJobToRunner(long jobId, string runnerName)

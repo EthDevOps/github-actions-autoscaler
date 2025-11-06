@@ -17,7 +17,7 @@ namespace GithubActionsOrchestrator.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "8.0.7")
+                .HasAnnotation("ProductVersion", "8.0.8")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -149,7 +149,7 @@ namespace GithubActionsOrchestrator.Migrations
                     b.Property<DateTime>("EventTimeUtc")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<int?>("RunnerId")
+                    b.Property<int>("RunnerId")
                         .HasColumnType("integer");
 
                     b.Property<int>("Status")
@@ -160,6 +160,130 @@ namespace GithubActionsOrchestrator.Migrations
                     b.HasIndex("RunnerId");
 
                     b.ToTable("RunnerLifecycles");
+                });
+
+            modelBuilder.Entity("GithubActionsOrchestrator.Models.CancelledRunnersCounter", b =>
+                {
+                    b.Property<int>("CancelledRunnersCounterId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("CancelledRunnersCounterId"));
+
+                    b.Property<string>("Arch")
+                        .HasColumnType("text");
+
+                    b.Property<int>("Count")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Owner")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Profile")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Repository")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Size")
+                        .HasColumnType("text");
+
+                    b.HasKey("CancelledRunnersCounterId");
+
+                    b.HasIndex("Owner", "Repository", "Size", "Profile", "Arch")
+                        .IsUnique();
+
+                    b.ToTable("CancelledRunnersCounters");
+                });
+
+            modelBuilder.Entity("GithubActionsOrchestrator.Models.CreateTaskQueue", b =>
+                {
+                    b.Property<int>("CreateTaskQueueId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("CreateTaskQueueId"));
+
+                    b.Property<bool>("IsStuckReplacement")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime>("QueuedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("RepoName")
+                        .HasColumnType("text");
+
+                    b.Property<int>("RetryCount")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("RunnerDbId")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("StuckJobId")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("TargetType")
+                        .HasColumnType("integer");
+
+                    b.HasKey("CreateTaskQueueId");
+
+                    b.ToTable("CreateTaskQueues");
+                });
+
+            modelBuilder.Entity("GithubActionsOrchestrator.Models.CreatedRunnersTracking", b =>
+                {
+                    b.Property<string>("Hostname")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("IsStuckReplacement")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("RepoName")
+                        .HasColumnType("text");
+
+                    b.Property<int>("RetryCount")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("RunnerDbId")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("StuckJobId")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("TargetType")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Hostname");
+
+                    b.ToTable("CreatedRunnersTrackings");
+                });
+
+            modelBuilder.Entity("GithubActionsOrchestrator.Models.DeleteTaskQueue", b =>
+                {
+                    b.Property<int>("DeleteTaskQueueId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("DeleteTaskQueueId"));
+
+                    b.Property<DateTime>("QueuedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("RetryCount")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("RunnerDbId")
+                        .HasColumnType("integer");
+
+                    b.Property<long>("ServerId")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("DeleteTaskQueueId");
+
+                    b.ToTable("DeleteTaskQueues");
                 });
 
             modelBuilder.Entity("GithubActionsOrchestrator.Database.Job", b =>
@@ -184,7 +308,9 @@ namespace GithubActionsOrchestrator.Migrations
                 {
                     b.HasOne("GithubActionsOrchestrator.Database.Runner", null)
                         .WithMany("Lifecycle")
-                        .HasForeignKey("RunnerId");
+                        .HasForeignKey("RunnerId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("GithubActionsOrchestrator.Database.Runner", b =>
