@@ -76,6 +76,7 @@ public class PoolManager : BackgroundService
             {
                 // Update config
                 Program.LoadConfiguration();
+                targetConfig = Program.Config.TargetConfigs;
                 
                 // Grab some stats
                 await ProcessStats(targetConfig);

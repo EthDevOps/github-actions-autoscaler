@@ -325,9 +325,6 @@ public class Program
                             dbWorkflowComplete.State = JobState.Cancelled;
                             await db.SaveChangesAsync();
                             wasCancelled = true;
-                            
-                            // somehow clean runners from creation queue if not started yet.
-                            
                             break;
                         default:
                             dbWorkflowComplete.State = JobState.Completed;
