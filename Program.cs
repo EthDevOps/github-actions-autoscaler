@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -8,6 +9,8 @@ using GithubActionsOrchestrator.GitHub;
 using GithubActionsOrchestrator.Models;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 using Prometheus;
 using Serilog;
 using Serilog.Events;
@@ -17,6 +20,9 @@ namespace GithubActionsOrchestrator;
 public class Program
 {
     public static AutoScalerConfiguration Config = new();
+
+    internal const string ServiceName = "github-actions-orchestrator";
+    internal static readonly ActivitySource OrchestratorActivitySource = new(ServiceName);
 
     private static readonly Counter ProcessedJobCount = Metrics
         .CreateCounter("github_autoscaler_jobs_processed", "Number of processed jobs", labelNames: ["org", "size"]);
@@ -95,6 +101,18 @@ public class Program
 
         WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
         builder.Services.AddSerilog();
+        builder.Services.AddOpenTelemetry()
+            .ConfigureResource(resource => resource.AddService(serviceName: ServiceName))
+            .WithTracing(tracing =>
+            {
+                tracing
+                    .AddSource(ServiceName)
+                    .AddSource("Npgsql")
+                    .AddAspNetCoreInstrumentation()
+                    .AddHttpClientInstrumentation()
+                    .AddOtlpExporter()
+                    .AddProcessor(new Pyroscope.OpenTelemetry.PyroscopeSpanProcessor());
+            });
         builder.Services.AddSingleton<RunnerQueue>();
         builder.Services.AddHostedService<PoolManager>();
 
@@ -209,6 +227,8 @@ public class Program
 
     private static async Task<IResult> GithubWebhookHandler(HttpRequest request, [FromServices] HetznerCloudController cloud, [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue poolMgr)
     {
+        using var activity = OrchestratorActivitySource.StartActivity("webhook.github");
+
         // Verify webhook HMAC
         request.EnableBuffering();
         string requestBody;
@@ -227,6 +247,7 @@ public class Program
             }
             catch (Exception ex)
             {
+                activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
                 logger.LogWarning($"Webhook signature verification failed: {ex.Message}");
                 return Results.StatusCode(401);
             }
@@ -245,6 +266,8 @@ public class Program
             logger.LogDebug("No Action found. rejecting.");
             return Results.StatusCode(201);
         }
+
+        activity?.SetTag("github.action", action);
 
         if (!json.RootElement.TryGetProperty("workflow_job", out JsonElement workflowJson))
         {
@@ -274,6 +297,9 @@ public class Program
         string orgName = Config.TargetConfigs.FirstOrDefault(x => x.Target == TargetType.Organization && x.Name.ToLower() == orgNameRequest.ToLower())?.Name ?? orgNameRequest;
         string repoName = Config.TargetConfigs.FirstOrDefault(x => x.Target == TargetType.Repository && x.Name.ToLower() == repoNameRequest.ToLower())?.Name ?? repoNameRequest;
 
+        activity?.SetTag("github.job_id", jobId);
+        activity?.SetTag("github.repo", repoName);
+        activity?.SetTag("github.org", orgName);
 
         // Check if its an org or a repo
         if (String.IsNullOrEmpty(orgName))
@@ -292,7 +318,7 @@ public class Program
             return Results.StatusCode(201);
         }
 
-        
+
         await using var db = new ActionsRunnerContext();
 
         try
@@ -300,73 +326,82 @@ public class Program
             switch (action)
             {
                 case "queued":
-                    await JobQueued(logger, repoName, labels, orgName, poolMgr, isRepo ? TargetType.Repository : TargetType.Organization, jobId, jobUrl);
+                    using (OrchestratorActivitySource.StartActivity("webhook.github.queued"))
+                    {
+                        await JobQueued(logger, repoName, labels, orgName, poolMgr, isRepo ? TargetType.Repository : TargetType.Organization, jobId, jobUrl);
+                    }
                     break;
                 case "in_progress":
-                    var dbWorkflow = await db.Jobs.FirstOrDefaultAsync(x => x.GithubJobId == jobId);
-                    if (dbWorkflow == null)
+                    using (OrchestratorActivitySource.StartActivity("webhook.github.in_progress"))
                     {
-                        logger.LogWarning("Processing job on manually created runner");
-                        Job progressJob = new()
+                        var dbWorkflow = await db.Jobs.FirstOrDefaultAsync(x => x.GithubJobId == jobId);
+                        if (dbWorkflow == null)
                         {
-                            GithubJobId = jobId,
-                            Repository = repoName,
-                            Owner = isRepo ? repoName : orgName,
-                            State = JobState.InProgress,
-                            InProgressTime = DateTime.UtcNow,
-                            JobUrl = jobUrl,
-                            Orphan = true
-                        };
-                        await db.Jobs.AddAsync(progressJob);
+                            logger.LogWarning("Processing job on manually created runner");
+                            Job progressJob = new()
+                            {
+                                GithubJobId = jobId,
+                                Repository = repoName,
+                                Owner = isRepo ? repoName : orgName,
+                                State = JobState.InProgress,
+                                InProgressTime = DateTime.UtcNow,
+                                JobUrl = jobUrl,
+                                Orphan = true
+                            };
+                            await db.Jobs.AddAsync(progressJob);
+                        }
+                        else
+                        {
+                            dbWorkflow.State = JobState.InProgress;
+                            dbWorkflow.QueueTime = DateTime.UtcNow;
+                        }
+                        await db.SaveChangesAsync();
+                        await JobInProgress(workflowJson, logger, jobId, repoName, orgName);
                     }
-                    else
-                    {
-                        dbWorkflow.State = JobState.InProgress;
-                        dbWorkflow.QueueTime = DateTime.UtcNow;
-                    }
-                    await db.SaveChangesAsync();
-                    await JobInProgress(workflowJson, logger, jobId, repoName, orgName);
                     break;
                 case "completed":
-                    string conclusion = String.Empty;
-                    if (json.RootElement.TryGetProperty("conclusion", out JsonElement conclusionJson))
+                    using (OrchestratorActivitySource.StartActivity("webhook.github.completed"))
                     {
-                        conclusion = conclusionJson.GetString() ?? string.Empty;
-                    }
-
-                    var dbWorkflowComplete = await db.Jobs.FirstOrDefaultAsync(x => x.GithubJobId == jobId);
-                    if (dbWorkflowComplete == null)
-                    {
-                        logger.LogWarning($"Completed webhook for unknown job {jobId} in {repoName}. Creating record.");
-                        dbWorkflowComplete = new Job
+                        string conclusion = String.Empty;
+                        if (json.RootElement.TryGetProperty("conclusion", out JsonElement conclusionJson))
                         {
-                            GithubJobId = jobId,
-                            Repository = repoName,
-                            Owner = isRepo ? repoName : orgName,
-                            State = JobState.Completed,
-                            CompleteTime = DateTime.UtcNow,
-                            Orphan = true
-                        };
-                        await db.Jobs.AddAsync(dbWorkflowComplete);
-                        await db.SaveChangesAsync();
-                        return Results.StatusCode(201);
-                    }
-                    dbWorkflowComplete.CompleteTime = DateTime.UtcNow;
-                    bool wasCancelled = false;
-                    switch (conclusion)
-                    {
-                        case "cancelled":
-                            dbWorkflowComplete.State = JobState.Cancelled;
-                            await db.SaveChangesAsync();
-                            wasCancelled = true;
-                            break;
-                        default:
-                            dbWorkflowComplete.State = JobState.Completed;
-                            await db.SaveChangesAsync();
-                            break;
-                    }
+                            conclusion = conclusionJson.GetString() ?? string.Empty;
+                        }
 
-                    await JobCompleted(logger, jobId, poolMgr, repoName, orgName, workflowJson, wasCancelled);
+                        var dbWorkflowComplete = await db.Jobs.FirstOrDefaultAsync(x => x.GithubJobId == jobId);
+                        if (dbWorkflowComplete == null)
+                        {
+                            logger.LogWarning($"Completed webhook for unknown job {jobId} in {repoName}. Creating record.");
+                            dbWorkflowComplete = new Job
+                            {
+                                GithubJobId = jobId,
+                                Repository = repoName,
+                                Owner = isRepo ? repoName : orgName,
+                                State = JobState.Completed,
+                                CompleteTime = DateTime.UtcNow,
+                                Orphan = true
+                            };
+                            await db.Jobs.AddAsync(dbWorkflowComplete);
+                            await db.SaveChangesAsync();
+                            return Results.StatusCode(201);
+                        }
+                        dbWorkflowComplete.CompleteTime = DateTime.UtcNow;
+                        bool wasCancelled = false;
+                        switch (conclusion)
+                        {
+                            case "cancelled":
+                                dbWorkflowComplete.State = JobState.Cancelled;
+                                await db.SaveChangesAsync();
+                                wasCancelled = true;
+                                break;
+                            default:
+                                dbWorkflowComplete.State = JobState.Completed;
+                                await db.SaveChangesAsync();
+                                break;
+                        }
+
+                        await JobCompleted(logger, jobId, poolMgr, repoName, orgName, workflowJson, wasCancelled);
+                    }
                     break;
                 default:
                     logger.LogWarning("Unknown action. Ignoring");
@@ -375,12 +410,14 @@ public class Program
         }
         catch (Exception ex)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.AddException(ex);
             // This should make the webhook as bad and the timer will redeliver it after a while
             Log.Error($"Failed to process {action} webhook: {ex.Message}");
             return Results.StatusCode(500);
         }
 
-        // All was well 
+        // All was well
         return Results.StatusCode(201);
     }
 

@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Reflection.Metadata.Ecma335;
 using GithubActionsOrchestrator.CloudControllers;
+
 using GithubActionsOrchestrator.Database;
 using GithubActionsOrchestrator.GitHub;
 using GithubActionsOrchestrator.Models;
@@ -257,8 +259,10 @@ public class PoolManager : BackgroundService
 
     private async Task CheckForStuckRunners(List<GithubTargetConfiguration> targetConfig)
     {
+        using var activity = Program.OrchestratorActivitySource.StartActivity("maintenance.check_stuck_runners");
+
         // check the database for runners that are in "created" state for more then 5 minutes.
-        
+
         await using var db = new ActionsRunnerContext();
         var cutoffTime = DateTime.UtcNow - TimeSpan.FromMinutes(10);
         
@@ -275,9 +279,11 @@ public class PoolManager : BackgroundService
             .Select(r => new { r.RunnerId, r.CloudServerId, r.Hostname, r.Cloud })
             .ToListAsync();
         
+        activity?.SetTag("stuck_runners.count", stuckRunners.Count);
+
         if (stuckRunners.Count == 0)
             return;
-        
+
         // Process stuck runners and create lifecycle entries
         var lifecycleEntries = new List<RunnerLifecycle>();
         
@@ -506,6 +512,8 @@ public class PoolManager : BackgroundService
 
     private async Task CheckForStuckJobs(List<GithubTargetConfiguration> targetConfig)
     {
+        using var activity = Program.OrchestratorActivitySource.StartActivity("maintenance.check_stuck_jobs");
+
         await using var db = new ActionsRunnerContext();
         var stuckTime = DateTime.UtcNow - TimeSpan.FromMinutes(10);
 
@@ -513,6 +521,8 @@ public class PoolManager : BackgroundService
         var stuckJobs = await db.Jobs
             .Where(x => (x.State == JobState.Queued || x.State == JobState.Throttled) && x.RunnerId == null && x.QueueTime < stuckTime)
             .ToListAsync();
+
+        activity?.SetTag("stuck_jobs.count", stuckJobs.Count);
 
         foreach (var stuckJob in stuckJobs)
         {
@@ -893,9 +903,13 @@ public class PoolManager : BackgroundService
 
     private async Task<bool> DeleteRunner(DeleteRunnerTask rt)
     {
+        using var activity = Program.OrchestratorActivitySource.StartActivity("runner.delete");
+        activity?.SetTag("runner.db_id", rt.RunnerDbId);
+        activity?.SetTag("runner.server_id", rt.ServerId);
+
         await using var db = new ActionsRunnerContext();
         var runner = await db.Runners.Include(x => x.Lifecycle).FirstOrDefaultAsync(x => x.RunnerId == rt.RunnerDbId);
-        
+
         try
         {
             ICloudController cc = _cc.FirstOrDefault(x => x.CloudIdentifier == runner.Cloud);
@@ -917,6 +931,8 @@ public class PoolManager : BackgroundService
         }
         catch (Exception ex)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.AddException(ex);
             SentrySdk.CaptureException(ex, scope =>
             {
                 scope.SetTag("server-id", rt.ServerId.ToString());
@@ -952,6 +968,10 @@ public class PoolManager : BackgroundService
 
     private async Task<bool> CreateRunner(CreateRunnerTask rt)
     {
+        using var activity = Program.OrchestratorActivitySource.StartActivity("runner.create");
+        activity?.SetTag("runner.db_id", rt.RunnerDbId);
+        activity?.SetTag("runner.repo", rt.RepoName);
+
         await using var db = new ActionsRunnerContext();
         var runner = await db.Runners.Include(x => x.Lifecycle).FirstOrDefaultAsync(x => x.RunnerId == rt.RunnerDbId);
 
@@ -1054,6 +1074,8 @@ public class PoolManager : BackgroundService
                 {
                     newRunner = await cc.CreateNewRunner(runner.Arch, runner.Size, runnerToken, targetName, runner.IsCustom, runner.Profile);
                     _logger.LogInformation($"New Runner {newRunner.Name} [{runner.Size} on {runner.Arch}] entering pool for {targetName}.");
+                    activity?.SetTag("runner.hostname", newRunner.Name);
+                    activity?.SetTag("runner.cloud", cc.CloudIdentifier);
                     MachineCreatedCount.Labels(runner.Owner, runner.Size).Inc();
 
                     runner.Hostname = newRunner.Name;
@@ -1092,6 +1114,8 @@ public class PoolManager : BackgroundService
         }
         catch (Exception ex)
         {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.AddException(ex);
             SentrySdk.CaptureException(ex, scope =>
             {
                 scope.SetTag("runner-size", runner.Size);
