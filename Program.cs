@@ -52,7 +52,6 @@ public class Program
             options.Dsn = "https://32e67fe320454af79c685a59a3502116@glitchtip.ethquokkaops.io/1";
         });
         
-        
         // Set up logging
         Log.Logger = new LoggerConfiguration()
             .MinimumLevel.Debug()
@@ -61,8 +60,6 @@ public class Program
             .Enrich.FromLogContext()
             .WriteTo.Console()
             .CreateLogger();
-
-
 
         if (!LoadConfiguration())
         {
@@ -212,10 +209,31 @@ public class Program
 
     private static async Task<IResult> GithubWebhookHandler(HttpRequest request, [FromServices] HetznerCloudController cloud, [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue poolMgr)
     {
-        // Verify webhook HMAC - TODO
+        // Verify webhook HMAC
+        request.EnableBuffering();
+        string requestBody;
+        using (var reader = new StreamReader(request.Body, leaveOpen: true))
+        {
+            requestBody = await reader.ReadToEndAsync();
+            request.Body.Position = 0;
+        }
+
+        if (!string.IsNullOrEmpty(Config.WebhookSecret))
+        {
+            string signatureHeader = request.Headers["X-Hub-Signature-256"].FirstOrDefault();
+            try
+            {
+                GithubSignatureVerifier.VerifySignature(requestBody, Config.WebhookSecret, signatureHeader);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning($"Webhook signature verification failed: {ex.Message}");
+                return Results.StatusCode(401);
+            }
+        }
 
         // Read webhook from github
-        JsonDocument json = await request.ReadFromJsonAsync<JsonDocument>();
+        JsonDocument json = JsonDocument.Parse(requestBody);
 
         string action;
         if (json.RootElement.TryGetProperty("action", out JsonElement actionJson))
@@ -275,8 +293,8 @@ public class Program
         }
 
         
-        var db = new ActionsRunnerContext();
-        
+        await using var db = new ActionsRunnerContext();
+
         try
         {
             switch (action)
@@ -317,6 +335,22 @@ public class Program
                     }
 
                     var dbWorkflowComplete = await db.Jobs.FirstOrDefaultAsync(x => x.GithubJobId == jobId);
+                    if (dbWorkflowComplete == null)
+                    {
+                        logger.LogWarning($"Completed webhook for unknown job {jobId} in {repoName}. Creating record.");
+                        dbWorkflowComplete = new Job
+                        {
+                            GithubJobId = jobId,
+                            Repository = repoName,
+                            Owner = isRepo ? repoName : orgName,
+                            State = JobState.Completed,
+                            CompleteTime = DateTime.UtcNow,
+                            Orphan = true
+                        };
+                        await db.Jobs.AddAsync(dbWorkflowComplete);
+                        await db.SaveChangesAsync();
+                        return Results.StatusCode(201);
+                    }
                     dbWorkflowComplete.CompleteTime = DateTime.UtcNow;
                     bool wasCancelled = false;
                     switch (conclusion)
@@ -352,7 +386,7 @@ public class Program
 
     private static async Task<IResult> RunnerStateReportHandler(HttpRequest request, [FromServices] IServiceProvider serviceProvider , [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue runnerQueue, [FromQuery] string hostname, [FromQuery] string state)
     {
-        var db = new ActionsRunnerContext();
+        await using var db = new ActionsRunnerContext();
         var runner = await db.Runners.Include(x => x.Lifecycle).Include(x => x.Job).FirstOrDefaultAsync(x => x.Hostname == hostname);
         switch (state)
         {
@@ -512,7 +546,7 @@ public class Program
 
     private static async Task JobCompleted(ILogger<Program> logger, long jobId, RunnerQueue poolMgr, string repoName, string orgName, JsonElement workflowJson, bool wasCancelled)
     {
-        var db = new ActionsRunnerContext();
+        await using var db = new ActionsRunnerContext();
         var job = await db.Jobs
             .Include(job => job.Runner)
             .ThenInclude(runner => runner.Lifecycle)
@@ -622,9 +656,15 @@ public class Program
         logger.LogInformation($"Workflow Job {jobId} in repo {repoName} now in progress on {runnerName}");
         
         // Make the connection between the job and the runner in the DB
-        var db = new ActionsRunnerContext();
+        await using var db = new ActionsRunnerContext();
         Runner runner = await db.LinkJobToRunner(jobId, runnerName);
-       
+
+        if (runner == null)
+        {
+            logger.LogWarning($"Unable to link job {jobId} to runner {runnerName}");
+            return;
+        }
+
         // Metrics
         PickedJobCount.Labels(orgName, runner.Size).Inc();
 

@@ -13,7 +13,6 @@ public class ProxmoxCloudController : BaseCloudController, ICloudController
     private readonly string _pveUsername;
     private readonly string _pvePassword;
     private readonly string _mainNode;
-    private readonly int _pveTemplate;
     private readonly int _minVmId;
     private readonly SemaphoreSlim _semaphore = new SemaphoreSlim(1, 1);
     private readonly HttpClient _httpClient;
@@ -29,7 +28,6 @@ public class ProxmoxCloudController : BaseCloudController, ICloudController
         _pveHost = configPveHost;
         _pveUsername = configPveUsername;
         _pvePassword = configPvePassword;
-        _pveTemplate = configPveTemplate;
         _minVmId = minVmId;
         _mainNode = "colo-pxe-01";
         _logger = logger;
@@ -37,13 +35,12 @@ public class ProxmoxCloudController : BaseCloudController, ICloudController
         // Validate configuration for safety
         ValidateConfiguration();
         
-        _httpClient = new HttpClient();
-        _httpClient.DefaultRequestHeaders.Add("User-Agent", "GithubActionsOrchestrator");
         var handler = new HttpClientHandler()
         {
             ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true
         };
         _httpClient = new HttpClient(handler);
+        _httpClient.DefaultRequestHeaders.Add("User-Agent", "GithubActionsOrchestrator");
         
         logger.LogInformation("PVE Cloud Controller init done.");
     }
@@ -311,7 +308,7 @@ public class ProxmoxCloudController : BaseCloudController, ICloudController
         string hostname = await GenerateName();
         RunnerProfile profile = isCustom ? Program.Config.Profiles.FirstOrDefault(x => x.Name == profileName) : Program.Config.Profiles.FirstOrDefault(x => x.Name == "default");
 
-        int sourceVmId = _pveTemplate;
+        int sourceVmId = Program.Config.PveTemplate;
 
         string macaddress = string.Empty;
         int newVmId;

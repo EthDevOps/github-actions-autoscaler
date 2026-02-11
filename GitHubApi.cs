@@ -8,33 +8,43 @@ using Serilog.Core;
 namespace GithubActionsOrchestrator;
 
 public static class GitHubApi {
+    private static readonly HttpClient SharedClient = CreateSharedClient();
+
+    private static HttpClient CreateSharedClient()
+    {
+        var client = new HttpClient();
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+        client.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
+        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("hetzner-autoscale", "1"));
+        return client;
+    }
+
+    private static HttpRequestMessage CreateRequest(HttpMethod method, string url, string githubToken)
+    {
+        var request = new HttpRequestMessage(method, url);
+        request.Headers.Authorization = AuthenticationHeaderValue.Parse($"Bearer {githubToken}");
+        return request;
+    }
+
     public static async Task<List<GitHubRunner>> GetRunnersForOrg(string githubToken, string orgName)
     {
         return await GetRunners(githubToken, $"orgs/{orgName}");
     }
-    
+
     public static async Task<List<GitHubRunner>> GetRunnersForRepo(string githubToken, string repoName)
     {
         return await GetRunners(githubToken, $"repos/{repoName}");
     }
-    
+
     private static async Task<List<GitHubRunner>> GetRunners(string githubToken, string ownerPath)
     {
-        
-        // Register a runner with github
-        using HttpClient client = new();
-        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
-        client.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
-        client.DefaultRequestHeaders.Authorization = AuthenticationHeaderValue.Parse($"Bearer {githubToken}");
-        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("hetzner-autoscale", "1")); 
-            
-
         var runners = new List<GitHubRunner>();
         string url = $"https://api.github.com/{ownerPath}/actions/runners?per_page=100";
-        
+
         while (!string.IsNullOrEmpty(url))
         {
-            HttpResponseMessage response = await client.GetAsync(url);
+            using var request = CreateRequest(HttpMethod.Get, url, githubToken);
+            HttpResponseMessage response = await SharedClient.SendAsync(request);
             if (response.IsSuccessStatusCode)
             {
                 string content = await response.Content.ReadAsStringAsync();
@@ -80,19 +90,11 @@ public static class GitHubApi {
         return null;
     }
 
-    
+
     public static async Task<string> GetRunnerTokenForOrg(string githubToken, string orgName)
     {
-        
-        // Register a runner with github
-        using HttpClient client = new();
-        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
-        client.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
-        client.DefaultRequestHeaders.Authorization = AuthenticationHeaderValue.Parse($"Bearer {githubToken}");
-        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("hetzner-autoscale", "1")); 
-            
-        HttpResponseMessage response = await client.PostAsync(
-            $"https://api.github.com/orgs/{orgName}/actions/runners/registration-token", null);
+        using var request = CreateRequest(HttpMethod.Post, $"https://api.github.com/orgs/{orgName}/actions/runners/registration-token", githubToken);
+        HttpResponseMessage response = await SharedClient.SendAsync(request);
 
         if(response.IsSuccessStatusCode)
         {
@@ -106,16 +108,8 @@ public static class GitHubApi {
     }
     public static async Task<string> GetRunnerTokenForRepo(string githubToken, string repoName)
     {
-        
-        // Register a runner with github
-        using HttpClient client = new();
-        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
-        client.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
-        client.DefaultRequestHeaders.Authorization = AuthenticationHeaderValue.Parse($"Bearer {githubToken}");
-        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("hetzner-autoscale", "1")); 
-            
-        HttpResponseMessage response = await client.PostAsync(
-            $"https://api.github.com/repos/{repoName}/actions/runners/registration-token", null);
+        using var request = CreateRequest(HttpMethod.Post, $"https://api.github.com/repos/{repoName}/actions/runners/registration-token", githubToken);
+        HttpResponseMessage response = await SharedClient.SendAsync(request);
 
         if(response.IsSuccessStatusCode)
         {
@@ -130,48 +124,26 @@ public static class GitHubApi {
 
     public static async Task<bool> RemoveRunnerFromOrg(string orgName, string orgGitHubToken, long runnerToRemove)
     {
-        // Register a runner with github
-        using HttpClient client = new();
-        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
-        client.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
-        client.DefaultRequestHeaders.Authorization = AuthenticationHeaderValue.Parse($"Bearer {orgGitHubToken}");
-        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("hetzner-autoscale", "1"));
-
-        HttpResponseMessage response = await client.DeleteAsync(
-            $"https://api.github.com/orgs/{orgName}/actions/runners/{runnerToRemove}");
+        using var request = CreateRequest(HttpMethod.Delete, $"https://api.github.com/orgs/{orgName}/actions/runners/{runnerToRemove}", orgGitHubToken);
+        HttpResponseMessage response = await SharedClient.SendAsync(request);
         return response.IsSuccessStatusCode;
-
     }
     public static async Task<bool> RemoveRunnerFromRepo(string repoName, string orgGitHubToken, long runnerToRemove)
     {
-        // Register a runner with github
-        using HttpClient client = new();
-        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
-        client.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
-        client.DefaultRequestHeaders.Authorization = AuthenticationHeaderValue.Parse($"Bearer {orgGitHubToken}");
-        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("hetzner-autoscale", "1"));
-
-        HttpResponseMessage response = await client.DeleteAsync(
-            $"https://api.github.com/repos/{repoName}/actions/runners/{runnerToRemove}");
+        using var request = CreateRequest(HttpMethod.Delete, $"https://api.github.com/repos/{repoName}/actions/runners/{runnerToRemove}", orgGitHubToken);
+        HttpResponseMessage response = await SharedClient.SendAsync(request);
         return response.IsSuccessStatusCode;
-
     }
 
     public static async Task<GitHubApiWorkflowRun> GetJobInfoForOrg(long stuckJobGithubJobId,string repoName, string orgGitHubToken)
     {
-        using HttpClient client = new();
-        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
-        client.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
-        client.DefaultRequestHeaders.Authorization = AuthenticationHeaderValue.Parse($"Bearer {orgGitHubToken}");
-        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("hetzner-autoscale", "1"));
-
-        HttpResponseMessage response = await client.GetAsync(
-            $"https://api.github.com/orgs/{repoName}/actions/jobs/{stuckJobGithubJobId}");
+        using var request = CreateRequest(HttpMethod.Get, $"https://api.github.com/orgs/{repoName}/actions/jobs/{stuckJobGithubJobId}", orgGitHubToken);
+        HttpResponseMessage response = await SharedClient.SendAsync(request);
         if(response.IsSuccessStatusCode)
         {
             string content = await response.Content.ReadAsStringAsync();
             GitHubApiWorkflowRun responseObject = JsonSerializer.Deserialize<GitHubApiWorkflowRun>(content);
-            
+
             return responseObject;
         }
         Log.Warning($"Unable to get GH job info for {repoName}/{stuckJobGithubJobId}: [{response.StatusCode}] {response.ReasonPhrase}");
@@ -180,19 +152,13 @@ public static class GitHubApi {
     }
     public static async Task<GitHubApiWorkflowRun> GetJobInfoForRepo(long stuckJobGithubJobId,string repoName, string orgGitHubToken)
     {
-        using HttpClient client = new();
-        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
-        client.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
-        client.DefaultRequestHeaders.Authorization = AuthenticationHeaderValue.Parse($"Bearer {orgGitHubToken}");
-        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("hetzner-autoscale", "1"));
-
-        HttpResponseMessage response = await client.GetAsync(
-            $"https://api.github.com/repos/{repoName}/actions/jobs/{stuckJobGithubJobId}");
+        using var request = CreateRequest(HttpMethod.Get, $"https://api.github.com/repos/{repoName}/actions/jobs/{stuckJobGithubJobId}", orgGitHubToken);
+        HttpResponseMessage response = await SharedClient.SendAsync(request);
         if(response.IsSuccessStatusCode)
         {
             string content = await response.Content.ReadAsStringAsync();
             GitHubApiWorkflowRun responseObject = JsonSerializer.Deserialize<GitHubApiWorkflowRun>(content);
-            
+
             return responseObject;
         }
         Log.Warning($"Unable to get GH job info for {repoName}/{stuckJobGithubJobId}: [{response.StatusCode}] {response.ReasonPhrase}");

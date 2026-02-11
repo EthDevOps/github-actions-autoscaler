@@ -49,6 +49,9 @@ public class AutoScalerConfiguration
     
     [JsonConverter(typeof(EnvironmentAwareJsonConverter<string>))]
     public string ApiKey { get; set; }
+
+    [JsonConverter(typeof(EnvironmentAwareJsonConverter<string>))]
+    public string WebhookSecret { get; set; }
     
     public int PveTemplate { get; set; }
     

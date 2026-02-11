@@ -10,15 +10,17 @@ namespace GithubActionsOrchestrator;
 public class ApiController : Controller
 {
     private readonly RunnerQueue _runnerQueue;
+    private readonly ILogger<ApiController> _logger;
 
-    public ApiController(RunnerQueue runnerQueue)
+    public ApiController(RunnerQueue runnerQueue, ILogger<ApiController> logger)
     {
         _runnerQueue = runnerQueue;
+        _logger = logger;
     }
     [Route("get-runners")]
     public async Task<IResult> GetRunners([FromQuery] int limit = 100, [FromQuery] int offset = 0)
     {
-        var db = new ActionsRunnerContext();
+        await using var db = new ActionsRunnerContext();
         var recentRunners = await db.Runners.Include(x => x.Lifecycle).Include(x => x.Job).OrderByDescending(x => x.RunnerId).Skip(offset).Take(limit).ToListAsync();
         return Results.Json(recentRunners);
     }
@@ -26,7 +28,7 @@ public class ApiController : Controller
     [Route("get-jobs")]
     public async Task<IResult> GetJobs([FromQuery] int limit = 100, [FromQuery] int offset = 0)
     {
-        var db = new ActionsRunnerContext();
+        await using var db = new ActionsRunnerContext();
         var recentRunners = await db.Jobs.OrderByDescending(x => x.JobId).Skip(offset).Take(limit).ToListAsync();
         return Results.Json(recentRunners);
     }
@@ -34,7 +36,7 @@ public class ApiController : Controller
     [Route("get-runner/{runnerid}")]
     public async Task<IResult> GetRunner(int runnerid)
     {
-        var db = new ActionsRunnerContext();
+        await using var db = new ActionsRunnerContext();
         var runner = await db.Runners.Include(x => x.Lifecycle).FirstOrDefaultAsync(x => x.RunnerId == runnerid);
         return Results.Json(runner);
     }
@@ -42,7 +44,7 @@ public class ApiController : Controller
     [Route("get-job/{jobid}")]
     public async Task<IResult> GetJob(int jobid)
     {
-        var db = new ActionsRunnerContext();
+        await using var db = new ActionsRunnerContext();
         var job = await db.Jobs.FirstOrDefaultAsync(x => x.JobId == jobid);
         return Results.Json(job);
         
@@ -51,9 +53,12 @@ public class ApiController : Controller
     [Route("get-potential-runners/{jobId}")]
     public async Task<IResult> GetPotentialRunners(int jobId)
     {
-        var db = new ActionsRunnerContext();
+        await using var db = new ActionsRunnerContext();
         var job = await db.Jobs.FirstOrDefaultAsync(x => x.JobId == jobId);
-        
+
+        if (job == null)
+            return Results.NotFound(new { message = $"Job {jobId} not found" });
+
         // get labels
         string size = job.RequestedSize;
         string owner = job.Owner;
@@ -72,19 +77,21 @@ public class ApiController : Controller
     [Route("provision/{provisionId}")]
     public async Task<IResult> GetProvisionScript(string provisionId,[FromHeader(Name = "X-API-KEY")] string apiKey, [FromServices] IServiceProvider serviceProvider)
     {
-        /*// Check if API key is provided
+        // Check if API key is provided
         if (string.IsNullOrEmpty(apiKey))
         {
-            return Results.Unauthorized();
+            _logger.LogError("API key is missing for /api/provision");
+            //return Results.Unauthorized();
         }
-    
-        // Validate API key (replace with your actual validation logic)
+
+        // Validate API key
         if (apiKey != Program.Config.ApiKey)
         {
-            return Results.Unauthorized();
-        }*/
+            _logger.LogError("API key is not matching config for /api/provision");
+            //return Results.Unauthorized();
+        }
  
-        var db = new ActionsRunnerContext();
+        await using var db = new ActionsRunnerContext();
         var runner = await db.Runners.Where(x => x.ProvisionId.ToLower() == provisionId).FirstOrDefaultAsync();
         if(runner == null)
             return Results.NotFound();
@@ -98,23 +105,21 @@ public class ApiController : Controller
     [HttpPost]
     public async Task<IResult> KillNonProcessingRunners()
     {
-        var db = new ActionsRunnerContext();
-        
+        await using var db = new ActionsRunnerContext();
+
         // Find all runners that are not in Processing state using the lifecycle table
+        var excludedStatuses = new[] { RunnerStatus.Processing, RunnerStatus.DeletionQueued, RunnerStatus.Deleted };
         var runnersToKill = await db.Runners
             .AsNoTracking()
             .Where(r => db.RunnerLifecycles
                 .Where(rl => rl.RunnerId == r.RunnerId)
-                .OrderByDescending(rl => rl.EventTimeUtc)
-                .First().Status != RunnerStatus.Processing && 
-                db.RunnerLifecycles
-                .Where(rl => rl.RunnerId == r.RunnerId)
-                .OrderByDescending(rl => rl.EventTimeUtc)
-                .First().Status != RunnerStatus.DeletionQueued &&
-                db.RunnerLifecycles
-                .Where(rl => rl.RunnerId == r.RunnerId)
-                .OrderByDescending(rl => rl.EventTimeUtc)
-                .First().Status != RunnerStatus.Deleted)
+                .Any() &&
+                !excludedStatuses.Contains(
+                    db.RunnerLifecycles
+                        .Where(rl => rl.RunnerId == r.RunnerId)
+                        .OrderByDescending(rl => rl.EventTimeUtc)
+                        .Select(rl => rl.Status)
+                        .FirstOrDefault()))
             .Select(r => new { r.RunnerId, r.CloudServerId, r.Hostname })
             .ToListAsync();
 
@@ -135,5 +140,10 @@ public class ApiController : Controller
         });
     }
 
-    
+    [Route("health")]
+    [HttpGet]
+    public IResult Health()
+    {
+        return Results.Ok(new { status = "healthy" });
+    }
 }

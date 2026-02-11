@@ -20,7 +20,8 @@ public class Runner
     {
         get
         {
-            return Lifecycle.FirstOrDefault(x => x.Status == RunnerStatus.CreationQueued)!.EventTimeUtc;
+            var entry = Lifecycle?.FirstOrDefault(x => x.Status == RunnerStatus.CreationQueued);
+            return entry?.EventTimeUtc ?? DateTime.MinValue;
         }
     }
     public DateTime CreatedTime
@@ -40,7 +41,9 @@ public class Runner
     {
         get
         {
-            return Lifecycle.MaxBy(x => x.EventTimeUtc).Status;
+            if (Lifecycle == null || !Lifecycle.Any())
+                return RunnerStatus.CreationQueued;
+            return Lifecycle.MaxBy(x => x.EventTimeUtc)!.Status;
         }
     }
 
@@ -53,7 +56,9 @@ public class Runner
     {
         get
         {
-            return Lifecycle.MaxBy(x => x.EventTimeUtc).EventTimeUtc;
+            if (Lifecycle == null || !Lifecycle.Any())
+                return DateTime.MinValue;
+            return Lifecycle.MaxBy(x => x.EventTimeUtc)!.EventTimeUtc;
         }
     }
 

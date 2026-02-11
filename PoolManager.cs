@@ -335,7 +335,7 @@ public class PoolManager : BackgroundService
         
         
         // Grab job state counts
-        var db = new ActionsRunnerContext();
+        await using var db = new ActionsRunnerContext();
         var stuckTime = DateTime.UtcNow - TimeSpan.FromMinutes(15);
 
         // Count stuck jobs (queued for >15min, excluding throttled jobs)
@@ -434,7 +434,7 @@ public class PoolManager : BackgroundService
     private async Task StartPoolRunners(List<GithubTargetConfiguration> targetConfig)
     {
         // Start pool runners
-        var db = new ActionsRunnerContext();
+        await using var db = new ActionsRunnerContext();
         foreach (GithubTargetConfiguration owner in targetConfig)
         {
             _logger.LogInformation($"Checking pool runners for {owner.Name}");
@@ -506,7 +506,7 @@ public class PoolManager : BackgroundService
 
     private async Task CheckForStuckJobs(List<GithubTargetConfiguration> targetConfig)
     {
-        var db = new ActionsRunnerContext();
+        await using var db = new ActionsRunnerContext();
         var stuckTime = DateTime.UtcNow - TimeSpan.FromMinutes(10);
 
         // Check both Queued and Throttled jobs that have been waiting >10min without a runner
@@ -585,14 +585,14 @@ public class PoolManager : BackgroundService
                 else if (ghJob.Status != "queued")
                 {
                     _logger.LogWarning($"GHjob status for {stuckJob.JobId} is {ghJob.Status}");
-                }
-                
-                if (stuckJob.QueueTime + TimeSpan.FromHours(2) > DateTime.UtcNow)
-                {
-                    _logger.LogWarning($"Marking stuck job {stuckJob.GithubJobId} vanished as it's no longer in the GitHub queued state for more than 2h.");
-                    stuckJob.State = JobState.Vanished;
-                    stuckJob.CompleteTime = DateTime.UtcNow;
-                    await db.SaveChangesAsync();
+
+                    if (stuckJob.QueueTime + TimeSpan.FromHours(2) < DateTime.UtcNow)
+                    {
+                        _logger.LogWarning($"Marking stuck job {stuckJob.GithubJobId} vanished as it's no longer in the GitHub queued state for more than 2h.");
+                        stuckJob.State = JobState.Vanished;
+                        stuckJob.CompleteTime = DateTime.UtcNow;
+                        await db.SaveChangesAsync();
+                    }
                 }
                 
                 continue;
@@ -640,7 +640,7 @@ public class PoolManager : BackgroundService
     private async Task CleanUpRunners(List<GithubTargetConfiguration> targetConfigs)
     {
         List<string> registeredServerNames = new();
-        var db = new ActionsRunnerContext();
+        await using var db = new ActionsRunnerContext();
         foreach (GithubTargetConfiguration githubTarget in targetConfigs)
         {
             _logger.LogInformation($"Cleaning runners for {githubTarget.Name}...");
@@ -893,7 +893,7 @@ public class PoolManager : BackgroundService
 
     private async Task<bool> DeleteRunner(DeleteRunnerTask rt)
     {
-        var db = new ActionsRunnerContext();
+        await using var db = new ActionsRunnerContext();
         var runner = await db.Runners.Include(x => x.Lifecycle).FirstOrDefaultAsync(x => x.RunnerId == rt.RunnerDbId);
         
         try
@@ -952,7 +952,7 @@ public class PoolManager : BackgroundService
 
     private async Task<bool> CreateRunner(CreateRunnerTask rt)
     {
-        var db = new ActionsRunnerContext();
+        await using var db = new ActionsRunnerContext();
         var runner = await db.Runners.Include(x => x.Lifecycle).FirstOrDefaultAsync(x => x.RunnerId == rt.RunnerDbId);
 
         // Check if this runner creation should be skipped due to job cancellation
