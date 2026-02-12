@@ -110,7 +110,16 @@ public class Program
                     .AddSource("Npgsql")
                     .AddAspNetCoreInstrumentation()
                     .AddHttpClientInstrumentation()
-                    .AddOtlpExporter()
+                    .AddOtlpExporter(opt =>
+                    {
+                        var otlpUser = Environment.GetEnvironmentVariable("OTEL_EXPORTER_OTLP_AUTH_USER");
+                        var otlpPass = Environment.GetEnvironmentVariable("OTEL_EXPORTER_OTLP_AUTH_PASSWORD");
+                        if (!string.IsNullOrEmpty(otlpUser) && !string.IsNullOrEmpty(otlpPass))
+                        {
+                            var credentials = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes($"{otlpUser}:{otlpPass}"));
+                            opt.Headers = $"Authorization=Basic {credentials}";
+                        }
+                    })
                     .AddProcessor(new Pyroscope.OpenTelemetry.PyroscopeSpanProcessor());
             });
         builder.Services.AddSingleton<RunnerQueue>();

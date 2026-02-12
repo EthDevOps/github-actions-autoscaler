@@ -44,4 +44,8 @@ ENV DOTNET_EnableDiagnostics_IPC=0
 ENV DOTNET_EnableDiagnostics_Debugger=0
 ENV DOTNET_EnableDiagnostics_Profiler=1
 
+# Pyroscope basic auth (set at runtime)
+ENV PYROSCOPE_BASIC_AUTH_USER=""
+ENV PYROSCOPE_BASIC_AUTH_PASSWORD=""
+
 ENTRYPOINT ["dotnet", "GithubActionsOrchestrator.dll"]
