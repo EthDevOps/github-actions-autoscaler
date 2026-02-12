@@ -42,6 +42,7 @@ ENV CORECLR_PROFILER={BD1A650D-AC5D-4896-B64F-D6FA25D6B26A}
 ENV CORECLR_PROFILER_PATH=/pyroscope/Pyroscope.Profiler.Native.so
 ENV LD_PRELOAD=/pyroscope/Pyroscope.Linux.ApiWrapper.x64.so
 ENV LD_LIBRARY_PATH=/pyroscope
+ENV DD_PROFILING_ENABLED=1
 ENV DOTNET_EnableDiagnostics=1
 ENV DOTNET_EnableDiagnostics_IPC=0
 ENV DOTNET_EnableDiagnostics_Debugger=0
