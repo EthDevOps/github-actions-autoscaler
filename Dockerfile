@@ -29,6 +29,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends wget && \
     apt-get remove -y wget && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 
 FROM base AS final
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends libgssapi-krb5-2 && rm -rf /var/lib/apt/lists/*
+USER $APP_UID
 WORKDIR /app
 COPY --from=publish /app/publish .
 COPY --from=pyroscope-dl /pyroscope /pyroscope

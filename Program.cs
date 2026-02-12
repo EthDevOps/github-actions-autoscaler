@@ -9,6 +9,7 @@ using GithubActionsOrchestrator.GitHub;
 using GithubActionsOrchestrator.Models;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using OpenTelemetry.Exporter;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using Prometheus;
@@ -112,6 +113,7 @@ public class Program
                     .AddHttpClientInstrumentation()
                     .AddOtlpExporter(opt =>
                     {
+                        opt.Protocol = OtlpExportProtocol.HttpProtobuf;
                         var otlpUser = Environment.GetEnvironmentVariable("OTEL_EXPORTER_OTLP_AUTH_USER");
                         var otlpPass = Environment.GetEnvironmentVariable("OTEL_EXPORTER_OTLP_AUTH_PASSWORD");
                         if (!string.IsNullOrEmpty(otlpUser) && !string.IsNullOrEmpty(otlpPass))
