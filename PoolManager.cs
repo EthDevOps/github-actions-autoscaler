@@ -37,6 +37,10 @@ public class PoolManager : BackgroundService
         .CreateGauge("github_autoscaler_job_completed", "Total Number of jobs completed");
     private static readonly Gauge InProgressJobsCount = Metrics
         .CreateGauge("github_autoscaler_job_inprogress", "Total Number of jobs inprogress");
+    private static readonly Gauge DanglingRunnersCount = Metrics
+        .CreateGauge("github_autoscaler_runners_dangling", "Number of provisioned runners that never picked up a job");
+    private static readonly Gauge RunnersWithCompletedJobsCount = Metrics
+        .CreateGauge("github_autoscaler_runners_completed_jobs", "Number of runners with completed jobs awaiting cleanup");
 
     private readonly RunnerQueue _queues;
 
@@ -357,7 +361,25 @@ public class PoolManager : BackgroundService
         QueuedJobsCount.Set(jobsByState.FirstOrDefault(x => x.Key == JobState.Queued)?.Count ?? 0);
         CompletedJobsCount.Set(jobsByState.FirstOrDefault(x => x.Key == JobState.Completed)?.Count ?? 0);
         InProgressJobsCount.Set(jobsByState.FirstOrDefault(x => x.Key == JobState.InProgress)?.Count ?? 0);
-        
+
+        // Calculate dangling runners metric - idle runners with no job assignment older than 30 min
+        var danglingCutoff = DateTime.UtcNow - TimeSpan.FromMinutes(30);
+        var danglingRunners = await db.Runners
+            .Where(r => r.IsOnline &&
+                        r.JobId == null &&
+                        db.RunnerLifecycles
+                            .Any(rl => rl.RunnerId == r.RunnerId && rl.Status == RunnerStatus.CreationQueued && rl.EventTimeUtc < danglingCutoff))
+            .CountAsync();
+        DanglingRunnersCount.Set(danglingRunners);
+
+        // Calculate runners with completed jobs
+        var runnersWithCompletedJobs = await db.Runners
+            .Where(r => r.IsOnline &&
+                        r.JobId != null &&
+                        (r.Job.State == JobState.Completed || r.Job.State == JobState.Cancelled || r.Job.State == JobState.Vanished))
+            .CountAsync();
+        RunnersWithCompletedJobsCount.Set(runnersWithCompletedJobs);
+
         // grab runner state counts
         
         // Github runner stats
@@ -644,18 +666,146 @@ public class PoolManager : BackgroundService
                 IsStuckReplacement = true,
                 StuckJobId = stuckJob.JobId
             });
-        } 
+        }
+    }
+
+    // Helper methods for cleanup process
+
+    /// <summary>
+    /// Gets the creation time for a runner. Prefers CreatedTime from database, falls back to CSP time.
+    /// Automatically loads Lifecycle if not already loaded.
+    /// </summary>
+    private async Task<DateTime> GetRunnerCreationTime(Runner runner, CspServer cspServer = null, ActionsRunnerContext db = null)
+    {
+        // Ensure Lifecycle is loaded
+        if (runner.Lifecycle == null || !runner.Lifecycle.Any())
+        {
+            if (db != null)
+            {
+                try
+                {
+                    await db.Entry(runner).Collection(r => r.Lifecycle).LoadAsync();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning($"Unable to load Lifecycle for runner {runner.RunnerId}: {ex.Message}");
+                }
+            }
+            else
+            {
+                _logger.LogWarning($"GetRunnerCreationTime called without Lifecycle loaded and no DbContext provided for runner {runner.RunnerId}");
+            }
+        }
+
+        // First choice: Use the Created lifecycle event time (when VM was actually created)
+        if (runner.Lifecycle?.Any() == true && runner.CreatedTime != DateTime.MaxValue)
+            return runner.CreatedTime;
+
+        // Fallback: Use CSP creation time if available
+        if (cspServer != null)
+            return cspServer.CreatedAt.ToUniversalTime();
+
+        // Last resort: Use queue time if lifecycle is available
+        if (runner.Lifecycle?.Any() == true)
+            return runner.CreationQueuedTime;
+
+        // Ultimate fallback: current time minus 1 hour (safe default)
+        _logger.LogWarning($"Unable to determine creation time for runner {runner.RunnerId} - using default");
+        return DateTime.UtcNow - TimeSpan.FromHours(1);
+    }
+
+    /// <summary>
+    /// Checks if a runner's job is complete by checking database state and optionally GitHub API.
+    /// </summary>
+    private bool IsJobComplete(Runner runner, GitHubApiWorkflowRun githubJob = null)
+    {
+        // No job assigned = never processed = can cleanup
+        if (runner.Job == null)
+            return true;
+
+        // Check database job state
+        if (runner.Job.State == JobState.Completed ||
+            runner.Job.State == JobState.Cancelled ||
+            runner.Job.State == JobState.Vanished)
+            return true;
+
+        // Cross-check with GitHub API if available
+        if (githubJob != null &&
+            (githubJob.Status == "completed" ||
+             githubJob.Conclusion != null))
+            return true;
+
+        return false;
+    }
+
+    /// <summary>
+    /// Checks if it's safe to queue a runner for deletion (not already queued recently).
+    /// </summary>
+    private bool SafeToQueueDeletion(Runner runner)
+    {
+        // Check for recent deletion queue events (within last 5 minutes)
+        var recentDeletionQueue = runner.Lifecycle
+            .Where(x => x.Status == RunnerStatus.DeletionQueued)
+            .OrderByDescending(x => x.EventTimeUtc)
+            .FirstOrDefault();
+
+        if (recentDeletionQueue != null)
+        {
+            // If queued within last 5 minutes, don't re-queue
+            if (DateTime.UtcNow - recentDeletionQueue.EventTimeUtc < TimeSpan.FromMinutes(5))
+            {
+                return false;
+            }
+
+            // If queued more than 10 times, something is wrong - force retry
+            int queueCount = runner.Lifecycle.Count(x => x.Status == RunnerStatus.DeletionQueued);
+            if (queueCount > 10)
+            {
+                _logger.LogError($"Runner {runner.Hostname} has been queued {queueCount} times for deletion - forcing retry");
+                return true;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Final safety check before deletion - ensures runner is not actively working.
+    /// </summary>
+    private async Task<bool> IsSafeToDelete(Runner runner, GitHubRunner ghRunner = null, ActionsRunnerContext db = null)
+    {
+        // NEVER delete if currently processing
+        if (runner.LastState == RunnerStatus.Processing)
+            return false;
+
+        // NEVER delete if job is in progress
+        if (runner.Job != null && runner.Job.State == JobState.InProgress)
+            return false;
+
+        // NEVER delete if GitHub shows busy
+        if (ghRunner != null && ghRunner.Busy)
+            return false;
+
+        // NEVER delete very fresh runners (< 5 minutes) - protect against race conditions
+        var age = DateTime.UtcNow - await GetRunnerCreationTime(runner, null, db);
+        if (age < TimeSpan.FromMinutes(5))
+            return false;
+
+        return true;
     }
 
     private async Task CleanUpRunners(List<GithubTargetConfiguration> targetConfigs)
     {
+        using var activity = Program.OrchestratorActivitySource.StartActivity("maintenance.cleanup_runners");
+
         List<string> registeredServerNames = new();
         await using var db = new ActionsRunnerContext();
+
         foreach (GithubTargetConfiguration githubTarget in targetConfigs)
         {
             _logger.LogInformation($"Cleaning runners for {githubTarget.Name}...");
 
-            // Get runner infos
+            // Get runner info from GitHub
             List<GitHubRunner> githubRunners = githubTarget.Target switch
             {
                 TargetType.Organization => await GitHubApi.GetRunnersForOrg(githubTarget.GitHubToken, githubTarget.Name),
@@ -663,96 +813,224 @@ public class PoolManager : BackgroundService
                 _ => throw new ArgumentOutOfRangeException()
             };
 
-            // Remove all offline runner entries from GitHub
-            List<GitHubRunner> ghOfflineRunners = githubRunners.Where(x => x.Name.StartsWith(Program.Config.RunnerPrefix) && x.Status == "offline").ToList();
-            foreach (GitHubRunner runnerToRemove in ghOfflineRunners)
+            // CATEGORY 1: Offline Runners (Already Dead)
+            // These runners are offline on GitHub - quick cleanup after 10 minutes
+            List<GitHubRunner> ghOfflineRunners = githubRunners
+                .Where(x => x.Name.StartsWith(Program.Config.RunnerPrefix) && x.Status == "offline")
+                .ToList();
+
+            foreach (GitHubRunner ghRunner in ghOfflineRunners)
             {
-                var runner = await db.Runners.Include(x => x.Lifecycle).FirstOrDefaultAsync(x => x.Hostname == runnerToRemove.Name);
+                var runner = await db.Runners.Include(x => x.Lifecycle).Include(x => x.Job).FirstOrDefaultAsync(x => x.Hostname == ghRunner.Name);
+
                 if (runner == null)
                 {
-                    _logger.LogWarning($"Found offline runner on GitHub not on record: {runnerToRemove.Name} - Removing");
-                    bool f = githubTarget.Target switch
+                    // Orphaned GitHub runner - remove immediately
+                    _logger.LogWarning($"Found offline runner on GitHub not in database: {ghRunner.Name} - Removing");
+                    _ = githubTarget.Target switch
                     {
-                        TargetType.Organization => await GitHubApi.RemoveRunnerFromOrg(githubTarget.Name, githubTarget.GitHubToken, runnerToRemove.Id),
-                        TargetType.Repository => await GitHubApi.RemoveRunnerFromRepo(githubTarget.Name, githubTarget.GitHubToken, runnerToRemove.Id),
+                        TargetType.Organization => await GitHubApi.RemoveRunnerFromOrg(githubTarget.Name, githubTarget.GitHubToken, ghRunner.Id),
+                        TargetType.Repository => await GitHubApi.RemoveRunnerFromRepo(githubTarget.Name, githubTarget.GitHubToken, ghRunner.Id),
                         _ => throw new ArgumentOutOfRangeException()
                     };
                     continue;
                 }
 
-                if (DateTime.UtcNow - runner.CreationQueuedTime < TimeSpan.FromMinutes(30))
+                // Protection: Must be at least 10 minutes old
+                var runnerAge = DateTime.UtcNow - await GetRunnerCreationTime(runner, null, db);
+                if (runnerAge < TimeSpan.FromMinutes(10))
                 {
-                    // VM younger than 30min - not cleaning yet
                     continue;
                 }
 
-                runner.IsOnline = false;
-                runner.Lifecycle.Add(new()
-                {
-                    Status = RunnerStatus.Cleanup,
-                    EventTimeUtc = DateTime.UtcNow,
-                    Event = $"[GitHub] Removing offline runner {runnerToRemove.Name} from org {githubTarget.Name}"
-                });
-                await db.SaveChangesAsync();
-                _logger.LogInformation($"Removing offline runner {runnerToRemove.Name} from org {githubTarget.Name}");
-                bool _ = githubTarget.Target switch
-                {
-                    TargetType.Organization => await GitHubApi.RemoveRunnerFromOrg(githubTarget.Name, githubTarget.GitHubToken, runnerToRemove.Id),
-                    TargetType.Repository => await GitHubApi.RemoveRunnerFromRepo(githubTarget.Name, githubTarget.GitHubToken, runnerToRemove.Id),
-                    _ => throw new ArgumentOutOfRangeException()
-                };
-
-            }
-           
-            // remove any long idling runners. pool manager will start fresh ones eventually if needed. Keeps em fresh.
-            List<GitHubRunner> ghIdleRunners = githubRunners.Where(x => x.Name.StartsWith(Program.Config.RunnerPrefix) && x is { Status: "online", Busy: false }).ToList();
-            foreach (GitHubRunner ghIdleRunner in ghIdleRunners)
-            {
-                var runner = await db.Runners.Include(x => x.Lifecycle).FirstOrDefaultAsync(x => x.Hostname == ghIdleRunner.Name);
-                if (runner == null)
-                {
-                    _logger.LogWarning($"Found idle runner on GitHub not on record: {ghIdleRunner.Name}");
-                    continue;
-                }
-
-                if (DateTime.UtcNow - runner.CreationQueuedTime < TimeSpan.FromHours(6))
-                {
-                    // VM younger than 6h - not cleaning yet
-                    continue;
-                }
-
+                // Protection: Never delete if still processing
                 if (runner.LastState == RunnerStatus.Processing)
                 {
-                    // VM still processing - not cleaning
-                    _logger.LogWarning($"Found a long processing runner: {runner.Hostname}");
+                    _logger.LogWarning($"Runner {runner.Hostname} is offline but in Processing state - protecting");
                     continue;
                 }
-                
-                // Delete before writing to db.
-                bool _ = githubTarget.Target switch
+
+                // Protection: Check safety before deletion
+                if (!await IsSafeToDelete(runner, ghRunner, db))
                 {
-                    TargetType.Organization => await GitHubApi.RemoveRunnerFromOrg(githubTarget.Name, githubTarget.GitHubToken, ghIdleRunner.Id),
-                    TargetType.Repository => await GitHubApi.RemoveRunnerFromRepo(githubTarget.Name, githubTarget.GitHubToken, ghIdleRunner.Id),
+                    continue;
+                }
+
+                _logger.LogInformation($"[OFFLINE] Removing offline runner {ghRunner.Name} (age: {runnerAge.TotalMinutes:F1} min)");
+
+                // Remove from GitHub
+                _ = githubTarget.Target switch
+                {
+                    TargetType.Organization => await GitHubApi.RemoveRunnerFromOrg(githubTarget.Name, githubTarget.GitHubToken, ghRunner.Id),
+                    TargetType.Repository => await GitHubApi.RemoveRunnerFromRepo(githubTarget.Name, githubTarget.GitHubToken, ghRunner.Id),
                     _ => throw new ArgumentOutOfRangeException()
                 };
-               
+
+                // Mark offline and queue deletion
                 runner.IsOnline = false;
-                runner.Lifecycle.Add(new()
+                if (SafeToQueueDeletion(runner))
                 {
-                    Status = RunnerStatus.DeletionQueued,
-                    EventTimeUtc = DateTime.UtcNow,
-                    Event = $"Removing excessive idle runner {ghIdleRunner.Name} from org {githubTarget.Name}"
-                });
-                await db.SaveChangesAsync();
-                _logger.LogInformation($"Removing idle runner {ghIdleRunner.Name} from org {githubTarget.Name}");
-                _queues.DeleteTasks.Enqueue(new()
+                    runner.Lifecycle.Add(new()
+                    {
+                        Status = RunnerStatus.DeletionQueued,
+                        EventTimeUtc = DateTime.UtcNow,
+                        Event = $"Offline runner cleanup - age: {runnerAge.TotalMinutes:F1} min"
+                    });
+                    await db.SaveChangesAsync();
+
+                    _queues.DeleteTasks.Enqueue(new()
+                    {
+                        ServerId = runner.CloudServerId,
+                        RunnerDbId = runner.RunnerId
+                    });
+                }
+                else
                 {
-                    ServerId = runner.CloudServerId,
-                    RunnerDbId = runner.RunnerId
-                }); 
+                    await db.SaveChangesAsync();
+                    _logger.LogDebug($"Skipping deletion queue for {runner.Hostname} - recently queued");
+                }
             }
-            
-            // Get remaining runners registered to github
+
+            // CATEGORY 2: Runners with Completed Jobs
+            // If a job is complete, the runner should be removed quickly (5 min grace)
+            List<GitHubRunner> ghOnlineRunners = githubRunners
+                .Where(x => x.Name.StartsWith(Program.Config.RunnerPrefix) && x.Status == "online")
+                .ToList();
+
+            foreach (GitHubRunner ghRunner in ghOnlineRunners)
+            {
+                var runner = await db.Runners.Include(x => x.Lifecycle).Include(x => x.Job).FirstOrDefaultAsync(x => x.Hostname == ghRunner.Name);
+
+                if (runner == null || runner.Job == null)
+                {
+                    continue;
+                }
+
+                // Check if job is completed
+                if (!IsJobComplete(runner))
+                {
+                    continue;
+                }
+
+                // Protection: 5 minute grace period after job completion
+                var completionTime = runner.Job.CompleteTime;
+                if (completionTime != DateTime.MinValue && DateTime.UtcNow - completionTime < TimeSpan.FromMinutes(5))
+                {
+                    continue;
+                }
+
+                // Protection: Check safety
+                if (!await IsSafeToDelete(runner, ghRunner, db))
+                {
+                    continue;
+                }
+
+                _logger.LogInformation($"[COMPLETED JOB] Removing runner {ghRunner.Name} - job {runner.Job.JobId} is complete");
+
+                // Remove from GitHub
+                _ = githubTarget.Target switch
+                {
+                    TargetType.Organization => await GitHubApi.RemoveRunnerFromOrg(githubTarget.Name, githubTarget.GitHubToken, ghRunner.Id),
+                    TargetType.Repository => await GitHubApi.RemoveRunnerFromRepo(githubTarget.Name, githubTarget.GitHubToken, ghRunner.Id),
+                    _ => throw new ArgumentOutOfRangeException()
+                };
+
+                runner.IsOnline = false;
+                if (SafeToQueueDeletion(runner))
+                {
+                    runner.Lifecycle.Add(new()
+                    {
+                        Status = RunnerStatus.DeletionQueued,
+                        EventTimeUtc = DateTime.UtcNow,
+                        Event = $"Job {runner.Job.JobId} completed - removing runner"
+                    });
+                    await db.SaveChangesAsync();
+
+                    _queues.DeleteTasks.Enqueue(new()
+                    {
+                        ServerId = runner.CloudServerId,
+                        RunnerDbId = runner.RunnerId
+                    });
+                }
+                else
+                {
+                    await db.SaveChangesAsync();
+                    _logger.LogDebug($"Skipping deletion queue for {runner.Hostname} - recently queued");
+                }
+            }
+
+            // CATEGORY 3: Dangling Runners (Never Picked Up Job)
+            // Runners that are idle and haven't picked up a job - 30 min threshold
+            // Note: Runners with completed jobs are handled by Category 2
+            List<GitHubRunner> ghIdleRunners = githubRunners
+                .Where(x => x.Name.StartsWith(Program.Config.RunnerPrefix) && x.Status == "online" && !x.Busy)
+                .ToList();
+
+            foreach (GitHubRunner ghRunner in ghIdleRunners)
+            {
+                var runner = await db.Runners.Include(x => x.Lifecycle).Include(x => x.Job).FirstOrDefaultAsync(x => x.Hostname == ghRunner.Name);
+
+                if (runner == null)
+                {
+                    continue;
+                }
+
+                // Skip if this runner has a job assignment - Category 2 handles completed jobs
+                if (runner.Job != null)
+                {
+                    continue;
+                }
+
+                // DANGLING RUNNER: Idle with no job assignment
+                var runnerAge = DateTime.UtcNow - await GetRunnerCreationTime(runner, null, db);
+
+                // Protection: Must be at least 30 minutes old
+                if (runnerAge < TimeSpan.FromMinutes(30))
+                {
+                    continue;
+                }
+
+                // Protection: Check safety
+                if (!await IsSafeToDelete(runner, ghRunner, db))
+                {
+                    continue;
+                }
+
+                _logger.LogWarning($"[DANGLING] Removing dangling runner {ghRunner.Name} - idle for {runnerAge.TotalMinutes:F1} min with no job assignment");
+
+                // Remove from GitHub
+                _ = githubTarget.Target switch
+                {
+                    TargetType.Organization => await GitHubApi.RemoveRunnerFromOrg(githubTarget.Name, githubTarget.GitHubToken, ghRunner.Id),
+                    TargetType.Repository => await GitHubApi.RemoveRunnerFromRepo(githubTarget.Name, githubTarget.GitHubToken, ghRunner.Id),
+                    _ => throw new ArgumentOutOfRangeException()
+                };
+
+                runner.IsOnline = false;
+                if (SafeToQueueDeletion(runner))
+                {
+                    runner.Lifecycle.Add(new()
+                    {
+                        Status = RunnerStatus.DeletionQueued,
+                        EventTimeUtc = DateTime.UtcNow,
+                        Event = $"Dangling runner - idle for {runnerAge.TotalMinutes:F1} min with no job assignment"
+                    });
+                    await db.SaveChangesAsync();
+
+                    _queues.DeleteTasks.Enqueue(new()
+                    {
+                        ServerId = runner.CloudServerId,
+                        RunnerDbId = runner.RunnerId
+                    });
+                }
+                else
+                {
+                    await db.SaveChangesAsync();
+                    _logger.LogDebug($"Skipping deletion queue for {runner.Hostname} - recently queued");
+                }
+            }
+
+            // Collect registered runner names for CSP cleanup
             githubRunners = githubTarget.Target switch
             {
                 TargetType.Organization => await GitHubApi.GetRunnersForOrg(githubTarget.GitHubToken, githubTarget.Name),
@@ -761,144 +1039,172 @@ public class PoolManager : BackgroundService
             };
             registeredServerNames.AddRange(githubRunners.Where(x => x.Name.StartsWith(Program.Config.RunnerPrefix)).Select(x => x.Name));
         }
-        
-        // Remove every VM that's not in the github registered runners
+
+        // CATEGORY 4: CSP Cleanup - Remove VMs not registered in GitHub
+        // Handles runners that vanished from GitHub or never registered
         foreach (ICloudController cc in _cc)
         {
             try
             {
-                List<CspServer> remainingServers = await cc.GetAllServersFromCsp();
-                foreach (CspServer cspServer in remainingServers)
+                List<CspServer> cspServers = await cc.GetAllServersFromCsp();
+
+                foreach (CspServer cspServer in cspServers)
                 {
-                    
-                    SentrySdk.AddBreadcrumb("Checking server for removal.", category: "Cleanup", data: new Dictionary<string, string>
+                    SentrySdk.AddBreadcrumb("Checking CSP server for removal", category: "Cleanup", data: new Dictionary<string, string>
                     {
                         {"server", cspServer.Name}
                     });
+
+                    // Skip if registered in GitHub
                     if (registeredServerNames.Contains(cspServer.Name))
                     {
-                        // If we know the server in github, skip
                         continue;
                     }
 
+                    // Protection: 5-minute grace for fresh VMs (registration time)
                     if (cspServer.CreatedAt + TimeSpan.FromMinutes(5) > DateTime.UtcNow)
                     {
-                        // fresh runner. don't act on it yet
                         continue;
                     }
 
-                    // Check for a runner existing longer than 24h that might have vanished from github but is still processing
-                    var cspRunnerDb = await db.Runners.Include(x => x.Job).FirstOrDefaultAsync(x => x.Hostname == cspServer.Name);
-                    if (cspRunnerDb is { Job: not null })
+                    var runner = await db.Runners.Include(x => x.Lifecycle).Include(x => x.Job).FirstOrDefaultAsync(x => x.Hostname == cspServer.Name);
+
+                    if (runner == null)
+                    {
+                        _logger.LogWarning($"CSP server {cspServer.Name} not found in database - skipping");
+                        continue;
+                    }
+
+                    // CATEGORY 4A: Protection for >24h jobs
+                    // Runners can vanish from GitHub registration after 24h but still be processing
+                    if (runner.Job != null)
                     {
                         try
                         {
-                            // query github for job
-                            var runnerToken = Program.Config.TargetConfigs.FirstOrDefault(x => x.Name == cspRunnerDb.Job.Owner).GitHubToken;
-                            var githubJob = await GitHubApi.GetJobInfoForOrg(cspRunnerDb.Job.GithubJobId, cspRunnerDb.Job.Repository, runnerToken);
-                            if (githubJob is { Status: "running" })
+                            var targetConfig = Program.Config.TargetConfigs.FirstOrDefault(x => x.Name == runner.Job.Owner);
+                            if (targetConfig != null)
                             {
-                                _logger.LogWarning($"Got a runner ({cspServer.Name}) not in GitHub anymore but still processing. Indicates a >24h job.");
-                                continue;
+                                var githubJob = await GitHubApi.GetJobInfoForOrg(runner.Job.GithubJobId, runner.Job.Repository, targetConfig.GitHubToken);
+
+                                if (githubJob?.Status == "running" || githubJob?.Status == "in_progress")
+                                {
+                                    _logger.LogWarning($"[>24H JOB] Runner {cspServer.Name} not in GitHub but job {runner.Job.JobId} still running - protecting");
+                                    continue;
+                                }
                             }
                         }
                         catch (Exception ex)
                         {
-                            SentrySdk.CaptureException(ex, scope =>
+                            _logger.LogWarning($"Unable to check GitHub job status for {runner.Hostname}: {ex.Message}");
+                            SentrySdk.CaptureException(ex, scope => scope.Level = SentryLevel.Warning);
+                        }
+                    }
+
+                    // Check if already queued for deletion
+                    if (!SafeToQueueDeletion(runner))
+                    {
+                        int queueCount = runner.Lifecycle.Count(x => x.Status == RunnerStatus.DeletionQueued);
+
+                        if (queueCount > 10)
+                        {
+                            // Force retry after 10 attempts
+                            _logger.LogWarning($"Runner {runner.Hostname} stuck after {queueCount} deletion attempts - forcing retry");
+                            runner.Lifecycle.Add(new()
                             {
-                                scope.Level = SentryLevel.Warning;
+                                Status = RunnerStatus.DeletionQueued,
+                                Event = $"Forcing retry after {queueCount} failed deletion attempts",
+                                EventTimeUtc = DateTime.UtcNow
+                            });
+                            await db.SaveChangesAsync();
+
+                            _queues.DeleteTasks.Enqueue(new()
+                            {
+                                RunnerDbId = runner.RunnerId,
+                                ServerId = cspServer.Id
                             });
                         }
-
-                    }
-                    
-
-                    _logger.LogInformation($"{cspServer.Name} is a candidate to be killed from {cc.CloudIdentifier}");
-
-                    var runner = await db.Runners.Include(x => x.Lifecycle).FirstOrDefaultAsync(x => x.Hostname == cspServer.Name);
-                    if (runner == null)
-                    {
-                        _logger.LogInformation($"{cspServer.Name} is not found in the database");
                         continue;
                     }
 
-                    if (runner.Lifecycle.Count(x => x.Status == RunnerStatus.DeletionQueued) > 10)
-                    {
-                        runner.Lifecycle.Add(new()
-                        {
-                            Status = RunnerStatus.DeletionQueued,
-                            Event = "Still around after going in deletion queue. trying again...",
-                            EventTimeUtc = DateTime.UtcNow
-                        });
-                        await db.SaveChangesAsync();
-                        _queues.DeleteTasks.Enqueue(new()
-                        {
-                            RunnerDbId = runner.RunnerId,
-                            ServerId = cspServer.Id
-                        });
+                    // Determine if ready for cleanup based on age and state
+                    var runnerAge = DateTime.UtcNow - await GetRunnerCreationTime(runner, cspServer, db);
+                    bool shouldCleanup = false;
+                    string reason = "";
 
-                    }
-                    else if (runner.Lifecycle.Any(x => x.Status == RunnerStatus.DeletionQueued))
+                    if (runner.LastState >= RunnerStatus.Provisioned && runnerAge > TimeSpan.FromMinutes(30))
                     {
-                        runner.Lifecycle.Add(new()
-                        {
-                            Status = RunnerStatus.DeletionQueued,
-                            Event = "Don't queue deletion due to Github registration. Runner already queued for deletion.",
-                            EventTimeUtc = DateTime.UtcNow
-                        });
-                        await db.SaveChangesAsync();
+                        shouldCleanup = true;
+                        reason = $"Provisioned but not in GitHub for {runnerAge.TotalMinutes:F1} min";
+                    }
+                    else if (runner.LastState != RunnerStatus.Processing && runnerAge > TimeSpan.FromMinutes(30))
+                    {
+                        shouldCleanup = true;
+                        reason = $"Not in GitHub and not processing for {runnerAge.TotalMinutes:F1} min";
+                    }
 
-                    }
-                    else if ((runner.LastState >= RunnerStatus.Provisioned && DateTime.UtcNow - runner.LastStateTime > TimeSpan.FromMinutes(5)) ||
-                             (runner.LastState != RunnerStatus.Processing && DateTime.UtcNow - cspServer.CreatedAt.ToUniversalTime() > TimeSpan.FromMinutes(40)))
+                    if (shouldCleanup)
                     {
-                        _logger.LogInformation($"Removing VM that is not in any GitHub registration: {cspServer.Name} created at {cspServer.CreatedAt:u}");
+                        _logger.LogInformation($"[CSP CLEANUP] Removing {cspServer.Name} from {cc.CloudIdentifier} - {reason}");
+
                         runner.IsOnline = false;
                         runner.Lifecycle.Add(new()
                         {
                             Status = RunnerStatus.DeletionQueued,
-                            Event = "Removing as VM not longer in any GitHub registration",
+                            Event = $"CSP cleanup: {reason}",
                             EventTimeUtc = DateTime.UtcNow
                         });
                         await db.SaveChangesAsync();
+
                         _queues.DeleteTasks.Enqueue(new()
                         {
                             RunnerDbId = runner.RunnerId,
                             ServerId = cspServer.Id
                         });
-
                     }
-
                 }
-
             }
             catch (Exception ex)
             {
+                _logger.LogError($"Failed during CSP cleanup for {cc.CloudIdentifier}: {ex.Message}");
                 SentrySdk.CaptureException(ex);
-                _logger.LogError($"Failed during cleanup from CSP {cc.CloudIdentifier}: {ex.Message}");
             }
         }
 
-        foreach (var onlineSrvFromDb in db.Runners.Include(x => x.Lifecycle).Where(x => x.IsOnline))
+        // CATEGORY 5: Database Consistency - Mark runners offline if not in GitHub
+        var onlineRunnersInDb = await db.Runners.Include(x => x.Lifecycle).Where(x => x.IsOnline).ToListAsync();
+
+        foreach (var runner in onlineRunnersInDb)
         {
-            if(onlineSrvFromDb.CreationQueuedTime + TimeSpan.FromHours(1) > DateTime.UtcNow ) continue; // Leave young runners alone
-            if (registeredServerNames.Contains(onlineSrvFromDb.Hostname)) continue;
-           
-            if(onlineSrvFromDb.LastState == RunnerStatus.DeletionQueued) continue;
-            
-            
-            _logger.LogWarning($"Runner {onlineSrvFromDb.Hostname} is marked online but not registered in GitHub. Marking offline.");
-            onlineSrvFromDb.Lifecycle.Add(new()
+            // Protection: Leave young runners alone (1 hour)
+            if (DateTime.UtcNow - await GetRunnerCreationTime(runner, null, db) < TimeSpan.FromHours(1))
+            {
+                continue;
+            }
+
+            // Skip if registered in GitHub
+            if (registeredServerNames.Contains(runner.Hostname))
+            {
+                continue;
+            }
+
+            // Skip if already queued for deletion
+            if (runner.LastState == RunnerStatus.DeletionQueued)
+            {
+                continue;
+            }
+
+            _logger.LogWarning($"[DB CONSISTENCY] Runner {runner.Hostname} marked online but not in GitHub - marking offline");
+
+            runner.Lifecycle.Add(new()
             {
                 Status = RunnerStatus.VanishedOnCloud,
-                Event = "Marking VM as offline. Vanished from system.",
+                Event = "Database consistency check - not found in GitHub",
                 EventTimeUtc = DateTime.UtcNow
             });
-            onlineSrvFromDb.IsOnline = false;
-
+            runner.IsOnline = false;
         }
-        await db.SaveChangesAsync();
 
+        await db.SaveChangesAsync();
     }
 
     private async Task<bool> DeleteRunner(DeleteRunnerTask rt)
@@ -910,14 +1216,67 @@ public class PoolManager : BackgroundService
         await using var db = new ActionsRunnerContext();
         var runner = await db.Runners.Include(x => x.Lifecycle).FirstOrDefaultAsync(x => x.RunnerId == rt.RunnerDbId);
 
+        // Handle case where runner no longer exists in database
+        if (runner == null)
+        {
+            _logger.LogWarning($"DeleteRunner: Runner {rt.RunnerDbId} not found in database - may have been already deleted");
+
+            // Try to delete from CSP anyway using all available cloud controllers
+            bool deletedFromCsp = false;
+            foreach (var cc in _cc)
+            {
+                try
+                {
+                    await cc.DeleteRunner(rt.ServerId);
+                    _logger.LogInformation($"Deleted orphaned CSP server {rt.ServerId} from {cc.CloudIdentifier}");
+                    deletedFromCsp = true;
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    // Expected - server might not exist on this CSP
+                    _logger.LogDebug($"Server {rt.ServerId} not found on {cc.CloudIdentifier}: {ex.Message}");
+                }
+            }
+
+            if (!deletedFromCsp && rt.RetryCount < 3)
+            {
+                // Retry a few times in case it's a temporary issue
+                rt.RetryCount += 1;
+                _queues.DeleteTasks.Enqueue(rt);
+                _logger.LogWarning($"Retrying deletion for orphaned server {rt.ServerId} (attempt {rt.RetryCount})");
+            }
+
+            return deletedFromCsp;
+        }
+
+        activity?.SetTag("runner.hostname", runner.Hostname);
+        activity?.SetTag("runner.cloud", runner.Cloud);
+
         try
         {
+            // Find the correct cloud controller
             ICloudController cc = _cc.FirstOrDefault(x => x.CloudIdentifier == runner.Cloud);
             if (cc == null)
             {
-                throw new NullReferenceException($"No Cloud controller found for runner {runner.Cloud}");
+                _logger.LogError($"No Cloud controller found for runner {runner.Hostname} on cloud {runner.Cloud}");
+
+                // Mark as failed in database
+                runner.Lifecycle.Add(new RunnerLifecycle
+                {
+                    Status = RunnerStatus.Failure,
+                    EventTimeUtc = DateTime.UtcNow,
+                    Event = $"No cloud controller found for cloud '{runner.Cloud}'"
+                });
+                await db.SaveChangesAsync();
+
+                return false;
             }
+
+            // Delete from CSP
             await cc.DeleteRunner(rt.ServerId);
+
+            // Update database
             runner.IsOnline = false;
             runner.Lifecycle.Add(new()
             {
@@ -927,6 +1286,7 @@ public class PoolManager : BackgroundService
             });
             await db.SaveChangesAsync();
 
+            _logger.LogInformation($"Successfully deleted runner {runner.Hostname} (ServerId: {rt.ServerId}) from {cc.CloudIdentifier}");
             return true;
         }
         catch (Exception ex)
@@ -936,9 +1296,13 @@ public class PoolManager : BackgroundService
             SentrySdk.CaptureException(ex, scope =>
             {
                 scope.SetTag("server-id", rt.ServerId.ToString());
+                scope.SetTag("runner-hostname", runner.Hostname);
+                scope.SetTag("cloud", runner.Cloud);
             });
-            _logger.LogError(
-                $"Unable to delete runner [{rt.ServerId} | Retry: {rt.RetryCount}]: {ex.Message}");
+
+            _logger.LogError($"Unable to delete runner {runner.Hostname} [ServerId: {rt.ServerId} | Retry: {rt.RetryCount}]: {ex.Message}");
+
+            // Retry logic
             rt.RetryCount += 1;
             if (rt.RetryCount < 3)
             {
@@ -947,17 +1311,17 @@ public class PoolManager : BackgroundService
                 {
                     Status = RunnerStatus.Failure,
                     EventTimeUtc = DateTime.UtcNow,
-                    Event = $"Unable to delete runner | Retry: {rt.RetryCount}: {ex.Message}"
+                    Event = $"Deletion failed (retry {rt.RetryCount}): {ex.Message}"
                 });
             }
             else
             {
-                _logger.LogError($"Retries exceeded for {rt.ServerId}. Giving up.");
+                _logger.LogError($"Retries exceeded for runner {runner.Hostname} (ServerId: {rt.ServerId}). Giving up.");
                 runner.Lifecycle.Add(new RunnerLifecycle
                 {
                     Status = RunnerStatus.Failure,
                     EventTimeUtc = DateTime.UtcNow,
-                    Event = $"Retries exceeded deleting runner. Giving up. | Retry: {rt.RetryCount}: {ex.Message}"
+                    Event = $"Retries exceeded after {rt.RetryCount} attempts. Giving up. Error: {ex.Message}"
                 });
             }
 
