@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Xunit;
 using GithubActionsOrchestrator.CloudControllers;
+using Serilog.Core;
 
 namespace GithubActionsOrchestrator.IntegrationTests;
 
@@ -68,7 +69,7 @@ public class ApiControllerIpUpdateIntegrationTests : IClassFixture<ProxmoxTestFi
         services.AddSingleton<RunnerQueue>(new RunnerQueue()); // Mock queue
         var serviceProvider = services.BuildServiceProvider();
 
-        var apiController = new ApiController(serviceProvider.GetService<RunnerQueue>());
+        var apiController = new ApiController(serviceProvider.GetService<RunnerQueue>(), serviceProvider.GetService<Logger<ApiController>>());
 
         // Wait for VM to start and get network configuration
         await Task.Delay(30000); // 30 seconds
@@ -136,7 +137,7 @@ public class ApiControllerIpUpdateIntegrationTests : IClassFixture<ProxmoxTestFi
         services.AddSingleton<RunnerQueue>(new RunnerQueue()); // Mock queue
         var serviceProvider = services.BuildServiceProvider();
 
-        var apiController = new ApiController(serviceProvider.GetService<RunnerQueue>());
+        var apiController = new ApiController(serviceProvider.GetService<RunnerQueue>(), serviceProvider.GetService<Logger<ApiController>>());
 
         // Act - Call GetProvisionScript
         var result = await apiController.GetProvisionScript(machine.ProvisionId.ToLower(), null, serviceProvider);
@@ -182,7 +183,7 @@ public class ApiControllerIpUpdateIntegrationTests : IClassFixture<ProxmoxTestFi
         services.AddSingleton<RunnerQueue>(new RunnerQueue()); // Mock queue
         var serviceProvider = services.BuildServiceProvider();
 
-        var apiController = new ApiController(serviceProvider.GetService<RunnerQueue>());
+        var apiController = new ApiController(serviceProvider.GetService<RunnerQueue>(),serviceProvider.GetService<Logger<ApiController>>());
 
         // Act - Call GetProvisionScript
         var result = await apiController.GetProvisionScript(runner.ProvisionId.ToLower(), null, serviceProvider);
