@@ -57,4 +57,15 @@ public class AutoScalerConfiguration
     
     public int MinVmId { get; set; } = 5000;
     public int ParallelOperations { get; set; } = 10;
+
+    [JsonConverter(typeof(EnvironmentAwareJsonConverter<string>))]
+    public string DigitalOceanToken { get; set; }
+
+    public List<string> DigitalOceanRegions { get; set; } = new() { "fra1", "ams3", "lon1" };
+
+    public string DigitalOceanTag { get; set; } = "gh-runner";
+
+    public string DigitalOceanVpcUuid { get; set; }
+
+    public string DigitalOceanDefaultImage { get; set; } = "ubuntu-24-04-x64";
 }

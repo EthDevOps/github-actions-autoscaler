@@ -74,6 +74,14 @@ public class Program
             return;
         }
 
+        if (Config.RunnerPrefix == "ghr" &&
+            Environment.GetEnvironmentVariable("ALLOW_PRODUCTION_PREFIX") != "true")
+        {
+            Log.Error("SAFETY: RunnerPrefix is 'ghr' (production). " +
+                      "Set ALLOW_PRODUCTION_PREFIX=true to confirm, or use 'ghr-dev' for local dev.");
+            return;
+        }
+
         // Prepare metrics
         using KestrelMetricServer server = new(port: 9000);
         server.Start();
@@ -159,6 +167,18 @@ public class Program
             return new ProxmoxCloudController(logger, Config.Sizes, Config.ProvisionScriptBaseUrl, Config.MetricUser, Config.MetricPassword, Config.PveHost, Config.PveUsername, Config.PvePassword, Config.PveTemplate, Config.MinVmId);
         });
 
+        if (!string.IsNullOrWhiteSpace(Config.DigitalOceanToken))
+        {
+            builder.Services.AddSingleton<ICloudController, DigitalOceanCloudController>(svc =>
+            {
+                var logger = svc.GetRequiredService<ILogger<DigitalOceanCloudController>>();
+                return new DigitalOceanCloudController(logger, Config.DigitalOceanToken,
+                    Config.Sizes, Config.ProvisionScriptBaseUrl, Config.MetricUser,
+                    Config.MetricPassword, Config.DigitalOceanRegions, Config.DigitalOceanTag,
+                    Config.DigitalOceanVpcUuid, Config.DigitalOceanDefaultImage);
+            });
+        }
+
         WebApplication app = builder.Build();
         app.UseCors("AllowAll");
 
@@ -193,10 +213,13 @@ public class Program
     
     public static bool LoadConfiguration()
     {
-        string configDir = Environment.GetEnvironmentVariable("CONFIG_DIR") ??
-                           Directory.CreateTempSubdirectory().FullName;
-        // Setup pool config
-        string configPath = Path.Combine(configDir, "config.json");
+        string configPath = Environment.GetEnvironmentVariable("CONFIG_FILE");
+        if (string.IsNullOrEmpty(configPath))
+        {
+            string configDir = Environment.GetEnvironmentVariable("CONFIG_DIR") ??
+                               Directory.CreateTempSubdirectory().FullName;
+            configPath = Path.Combine(configDir, "config.json");
+        }
         if (!File.Exists(configPath))
         {
             Log.Error($"Unable to locate config file at {configPath}");
