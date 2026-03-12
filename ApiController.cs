@@ -140,6 +140,20 @@ public class ApiController : Controller
         });
     }
 
+    [Route("clear-creation-queue")]
+    [HttpPost]
+    public async Task<IResult> ClearCreationQueue()
+    {
+        await using var db = new ActionsRunnerContext();
+        var queuedTasks = await db.CreateTaskQueues.ToListAsync();
+        int count = queuedTasks.Count;
+        db.CreateTaskQueues.RemoveRange(queuedTasks);
+        await db.SaveChangesAsync();
+
+        _logger.LogWarning($"Creation queue cleared: removed {count} tasks");
+        return Results.Json(new { message = $"Cleared {count} tasks from creation queue" });
+    }
+
     [Route("health")]
     [HttpGet]
     public IResult Health()
