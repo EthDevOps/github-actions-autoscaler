@@ -76,8 +76,6 @@ public class PoolManager : BackgroundService
         
         while (!stoppingToken.IsCancellationRequested)
         {
-            
-
             if (DateTime.UtcNow - crudeStatsTimer > TimeSpan.FromSeconds(statsSeconds))
             {
                 // Update config
@@ -474,11 +472,16 @@ public class PoolManager : BackgroundService
                 continue;
             }
 
-            List<Runner> existingRunners = await db.Runners.Where(x => x.Owner == owner.Name && x.IsOnline).ToListAsync();
+            List<Runner> activeRunners = await db.Runners
+                .Include(x => x.Lifecycle)
+                .Where(x => x.Owner == owner.Name)
+                .ToListAsync();
+            // Count runners that are still alive (not yet deleted/failed/cancelled)
+            activeRunners = activeRunners.Where(x => x.LastState < RunnerStatus.DeletionQueued).ToList();
 
             foreach (Pool pool in owner.Pools)
             {
-                int existCt = existingRunners.Count(x => x.Size == pool.Size);
+                int existCt = activeRunners.Count(x => x.Size == pool.Size);
                 int missingCt = pool.NumRunners - existCt;
 
                 string arch = Program.Config.Sizes.FirstOrDefault(x => x.Name == pool.Size)?.Arch;
