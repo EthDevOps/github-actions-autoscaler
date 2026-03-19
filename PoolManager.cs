@@ -593,6 +593,26 @@ public class PoolManager : BackgroundService
                 continue;
             }
 
+            // Count-based check: compare matching runners in pipeline vs stuck jobs needing them
+            var profile = stuckJob.RequestedProfile ?? "default";
+            int matchingRunnersInPipeline =
+                _queues.CreateTasks.CountMatchingRunners(stuckJob.RequestedSize, stuckJob.Owner, profile)
+                + _queues.CreatedRunners.CountMatchingRunners(stuckJob.RequestedSize, stuckJob.Owner, profile);
+
+            int stuckJobsWithSameRequirements = stuckJobs.Count(j =>
+                j.RequestedSize == stuckJob.RequestedSize
+                && j.Owner == stuckJob.Owner
+                && (j.RequestedProfile ?? "default") == profile);
+
+            if (matchingRunnersInPipeline >= stuckJobsWithSameRequirements)
+            {
+                _logger.LogInformation(
+                    "Enough runners in pipeline ({RunnerCount}) for stuck jobs ({JobCount}) with Size={Size}, Owner={Owner}, Profile={Profile}. Skipping replacement for job {JobId}.",
+                    matchingRunnersInPipeline, stuckJobsWithSameRequirements,
+                    stuckJob.RequestedSize, stuckJob.Owner, profile, stuckJob.JobId);
+                continue;
+            }
+
             int replacementsInQueue =  _queues.CreateTasks.CountWhere(x => x.IsStuckReplacement);
             if (replacementsInQueue > 25)
             {
@@ -633,7 +653,6 @@ public class PoolManager : BackgroundService
                 continue;
             }
 
-            var profile = stuckJob.RequestedProfile ?? "default";
             string arch = Program.Config.Sizes.FirstOrDefault(x => x.Name == stuckJob.RequestedSize)?.Arch;
             Runner newRunner = new()
             {

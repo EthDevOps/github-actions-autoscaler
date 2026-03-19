@@ -68,6 +68,17 @@ public class DatabaseCreateTaskQueue
         context.SaveChanges();
     }
 
+    public int CountMatchingRunners(string size, string owner, string profile)
+    {
+        using var context = new ActionsRunnerContext();
+        return context.CreateTaskQueues
+            .Join(context.Runners,
+                ctq => ctq.RunnerDbId,
+                r => r.RunnerId,
+                (ctq, r) => r)
+            .Count(r => r.Size == size && r.Owner == owner && r.Profile == profile);
+    }
+
     public bool TryDequeue(out CreateRunnerTask? task)
     {
         using var context = new ActionsRunnerContext();
@@ -228,6 +239,17 @@ public class DatabaseCreatedRunnersDictionary
     public bool Remove(string hostname, out CreateRunnerTask? task)
     {
         return TryRemove(hostname, out task);
+    }
+
+    public int CountMatchingRunners(string size, string owner, string profile)
+    {
+        using var context = new ActionsRunnerContext();
+        return context.CreatedRunnersTrackings
+            .Join(context.Runners,
+                crt => crt.RunnerDbId,
+                r => r.RunnerId,
+                (crt, r) => r)
+            .Count(r => r.Size == size && r.Owner == owner && r.Profile == profile);
     }
 }
 
