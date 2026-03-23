@@ -109,6 +109,11 @@ public class PoolManager : BackgroundService
                 await CleanUpRunners(targetConfig);
                 
                 await StartPoolRunners(targetConfig);
+
+                var staleRemoved = _queues.CreatedRunners.RemoveStale(TimeSpan.FromMinutes(30));
+                if (staleRemoved > 0)
+                    _logger.LogWarning("Removed {Count} stale entries from CreatedRunnersTracking", staleRemoved);
+
                 await CheckForStuckJobs(targetConfig);
 
                 await CleanupDatabase();

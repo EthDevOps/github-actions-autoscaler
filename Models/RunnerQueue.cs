@@ -251,6 +251,22 @@ public class DatabaseCreatedRunnersDictionary
                 (crt, r) => r)
             .Count(r => r.Size == size && r.Owner == owner && r.Profile == profile);
     }
+
+    public int RemoveStale(TimeSpan maxAge)
+    {
+        using var context = new ActionsRunnerContext();
+        var cutoff = DateTime.UtcNow - maxAge;
+        var staleEntries = context.CreatedRunnersTrackings
+            .Where(x => x.CreatedAt < cutoff)
+            .ToList();
+
+        if (staleEntries.Count == 0)
+            return 0;
+
+        context.CreatedRunnersTrackings.RemoveRange(staleEntries);
+        context.SaveChanges();
+        return staleEntries.Count;
+    }
 }
 
 // Wrapper for CancelledRunnersCounter to mimic ConcurrentDictionary<(string, string, string, string, string), int>
