@@ -76,7 +76,7 @@ public class DatabaseCreateTaskQueue
                 ctq => ctq.RunnerDbId,
                 r => r.RunnerId,
                 (ctq, r) => r)
-            .Count(r => r.Size == size && r.Owner == owner && r.Profile == profile && r.CreationQueuedTime < (DateTime.UtcNow - TimeSpan.FromHours(2)));
+            .Count(r => r.Size == size && r.Owner == owner && r.Profile == profile);
     }
 
     public bool TryDequeue(out CreateRunnerTask? task)
