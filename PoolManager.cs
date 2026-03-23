@@ -547,8 +547,10 @@ public class PoolManager : BackgroundService
             .Where(x => (x.State == JobState.Queued || x.State == JobState.Throttled) && x.RunnerId == null && x.QueueTime < stuckTime)
             .ToListAsync();
 
-        activity?.SetTag("stuck_jobs.count", stuckJobs.Count);
+        activity?.SetTag("stuck_jobs.candidate_count", stuckJobs.Count);
 
+        // First pass: verify with GitHub which jobs are actually still queued
+        var confirmedStuckJobs = new List<Job>();
         foreach (var stuckJob in stuckJobs)
         {
             var owner = targetConfig.FirstOrDefault(x => x.Name == stuckJob.Owner);
@@ -583,7 +585,48 @@ public class PoolManager : BackgroundService
                 }
             }
 
-            // Job is genuinely stuck (not due to quota) - create replacement runner
+            // Verify job is still queued on GitHub before treating it as stuck
+            GitHubApiWorkflowRun ghJob = await GitHubApi.GetJobInfoForRepo(stuckJob.GithubJobId, stuckJob.Repository , owner.GitHubToken);
+            if (ghJob == null || ghJob.Status != "queued")
+            {
+                if (ghJob == null)
+                {
+                    _logger.LogWarning($"GHjob for {stuckJob.JobId} is null - not actually stuck");
+                }
+                else if (ghJob.Status == "completed")
+                {
+                    _logger.LogInformation($"Job {stuckJob.JobId} already completed on GitHub - updating local state");
+                    stuckJob.State = JobState.Completed;
+                    stuckJob.CompleteTime = DateTime.UtcNow;
+                    await db.SaveChangesAsync();
+                }
+                else
+                {
+                    _logger.LogInformation($"Job {stuckJob.JobId} has GitHub status '{ghJob.Status}' - not queued");
+
+                    if (stuckJob.QueueTime + TimeSpan.FromHours(2) < DateTime.UtcNow)
+                    {
+                        _logger.LogWarning($"Marking job {stuckJob.GithubJobId} as vanished - no longer queued on GitHub for over 2h.");
+                        stuckJob.State = JobState.Vanished;
+                        stuckJob.CompleteTime = DateTime.UtcNow;
+                        await db.SaveChangesAsync();
+                    }
+                }
+
+                continue;
+            }
+
+            // Job is confirmed stuck on GitHub
+            confirmedStuckJobs.Add(stuckJob);
+        }
+
+        activity?.SetTag("stuck_jobs.confirmed_count", confirmedStuckJobs.Count);
+
+        // Second pass: create replacement runners for confirmed stuck jobs
+        foreach (var stuckJob in confirmedStuckJobs)
+        {
+            var owner = targetConfig.First(x => x.Name == stuckJob.Owner);
+
             _logger.LogWarning($"Found stuck Job: {stuckJob.JobId} in {stuckJob.Repository}. Starting new runner to compensate...");
 
             // Check if there is already a runner in queue to unstuck
@@ -593,13 +636,13 @@ public class PoolManager : BackgroundService
                 continue;
             }
 
-            // Count-based check: compare matching runners in pipeline vs stuck jobs needing them
+            // Count-based check: compare matching runners in pipeline vs confirmed stuck jobs needing them
             var profile = stuckJob.RequestedProfile ?? "default";
             int matchingRunnersInPipeline =
                 _queues.CreateTasks.CountMatchingRunners(stuckJob.RequestedSize, stuckJob.Owner, profile)
                 + _queues.CreatedRunners.CountMatchingRunners(stuckJob.RequestedSize, stuckJob.Owner, profile);
 
-            int stuckJobsWithSameRequirements = stuckJobs.Count(j =>
+            int stuckJobsWithSameRequirements = confirmedStuckJobs.Count(j =>
                 j.RequestedSize == stuckJob.RequestedSize
                 && j.Owner == stuckJob.Owner
                 && (j.RequestedProfile ?? "default") == profile);
@@ -617,39 +660,6 @@ public class PoolManager : BackgroundService
             if (replacementsInQueue > 25)
             {
                 _logger.LogWarning($"Creating queue already has {replacementsInQueue} stuck jobs replacements. Not adding more strain.");
-                continue;
-            }
-            
-            // check job on github
-            GitHubApiWorkflowRun ghJob = await GitHubApi.GetJobInfoForRepo(stuckJob.GithubJobId, stuckJob.Repository , owner.GitHubToken);
-            if (ghJob == null || ghJob.Status != "queued")
-            {
-                _logger.LogWarning($"job info for {stuckJob.JobId} not found or job not queued anymore on github.");
-
-                if (ghJob == null)
-                {
-                    _logger.LogWarning($"GHjob for {stuckJob.JobId} is null");
-                }
-                else if (ghJob.Status == "completed")
-                {
-                    _logger.LogWarning($"GHjob status for {stuckJob.JobId} is {ghJob.Status} - Marking job accordingly");
-                    stuckJob.State = JobState.Completed;
-                    stuckJob.CompleteTime = DateTime.UtcNow;
-                    await db.SaveChangesAsync();
-                }
-                else if (ghJob.Status != "queued")
-                {
-                    _logger.LogWarning($"GHjob status for {stuckJob.JobId} is {ghJob.Status}");
-
-                    if (stuckJob.QueueTime + TimeSpan.FromHours(2) < DateTime.UtcNow)
-                    {
-                        _logger.LogWarning($"Marking stuck job {stuckJob.GithubJobId} vanished as it's no longer in the GitHub queued state for more than 2h.");
-                        stuckJob.State = JobState.Vanished;
-                        stuckJob.CompleteTime = DateTime.UtcNow;
-                        await db.SaveChangesAsync();
-                    }
-                }
-                
                 continue;
             }
 
@@ -675,11 +685,11 @@ public class PoolManager : BackgroundService
                 IsCustom = profile != "default",
                 Owner = stuckJob.Owner,
                 StuckJobReplacement = true
-                
+
             };
             await db.Runners.AddAsync(newRunner);
             await db.SaveChangesAsync();
-           
+
             _queues.CreateTasks.Enqueue(new CreateRunnerTask
             {
                 RepoName = stuckJob.Repository,
