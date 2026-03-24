@@ -93,6 +93,10 @@ public class PoolManager : BackgroundService
             {
                 _logger.LogInformation("Cleaning runners...");
 
+                var staleRemoved = _queues.CreatedRunners.RemoveStale(TimeSpan.FromMinutes(15));
+                if (staleRemoved > 0)
+                    _logger.LogWarning("Removed {Count} stale entries from CreatedRunnersTracking", staleRemoved);
+
                 var checkInId = SentrySdk.CaptureCheckIn("CheckForStuckRunners", CheckInStatus.InProgress);
                 try
                 {
@@ -106,13 +110,25 @@ public class PoolManager : BackgroundService
                     SentrySdk.CaptureException(ex);
                 }
 
-                await CleanUpRunners(targetConfig);
-                
-                await StartPoolRunners(targetConfig);
+                try
+                {
+                    await CleanUpRunners(targetConfig);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError($"Unable to clean up runners: {ex.GetFullExceptionDetails()}");
+                    SentrySdk.CaptureException(ex);
+                }
 
-                var staleRemoved = _queues.CreatedRunners.RemoveStale(TimeSpan.FromMinutes(30));
-                if (staleRemoved > 0)
-                    _logger.LogWarning("Removed {Count} stale entries from CreatedRunnersTracking", staleRemoved);
+                try
+                {
+                    await StartPoolRunners(targetConfig);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError($"Unable to start pool runners: {ex.GetFullExceptionDetails()}");
+                    SentrySdk.CaptureException(ex);
+                }
 
                 await CheckForStuckJobs(targetConfig);
 

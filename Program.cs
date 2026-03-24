@@ -459,6 +459,12 @@ public class Program
     {
         await using var db = new ActionsRunnerContext();
         var runner = await db.Runners.Include(x => x.Lifecycle).Include(x => x.Job).FirstOrDefaultAsync(x => x.Hostname == hostname);
+        if (runner == null)
+        {
+            logger.LogError("Runner {Hostname} not found in database during state report ({State}). Removing tracking entry.", hostname, state);
+            runnerQueue.CreatedRunners.Remove(hostname, out _);
+            return Results.StatusCode(404);
+        }
         switch (state)
         {
             case "ok":
@@ -560,6 +566,10 @@ public class Program
                     await db.SaveChangesAsync();
                 }
 
+                break;
+            default:
+                logger.LogWarning("Runner {Hostname} reported unknown state '{State}'. Removing tracking entry.", hostname, state);
+                runnerQueue.CreatedRunners.Remove(hostname, out _);
                 break;
         }
 
