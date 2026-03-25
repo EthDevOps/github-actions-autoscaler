@@ -135,7 +135,7 @@ public static class GitHubApi {
         return response.IsSuccessStatusCode;
     }
 
-    public static async Task<GitHubApiWorkflowRun> GetJobInfoForOrg(long stuckJobGithubJobId,string repoName, string orgGitHubToken)
+    public static async Task<(GitHubApiWorkflowRun Job, System.Net.HttpStatusCode StatusCode)> GetJobInfoForOrg(long stuckJobGithubJobId,string repoName, string orgGitHubToken)
     {
         using var request = CreateRequest(HttpMethod.Get, $"https://api.github.com/orgs/{repoName}/actions/jobs/{stuckJobGithubJobId}", orgGitHubToken);
         HttpResponseMessage response = await SharedClient.SendAsync(request);
@@ -144,13 +144,13 @@ public static class GitHubApi {
             string content = await response.Content.ReadAsStringAsync();
             GitHubApiWorkflowRun responseObject = JsonSerializer.Deserialize<GitHubApiWorkflowRun>(content);
 
-            return responseObject;
+            return (responseObject, response.StatusCode);
         }
         Log.Warning($"Unable to get GH job info for {repoName}/{stuckJobGithubJobId}: [{response.StatusCode}] {response.ReasonPhrase}");
 
-        return null;
+        return (null, response.StatusCode);
     }
-    public static async Task<GitHubApiWorkflowRun> GetJobInfoForRepo(long stuckJobGithubJobId,string repoName, string orgGitHubToken)
+    public static async Task<(GitHubApiWorkflowRun Job, System.Net.HttpStatusCode StatusCode)> GetJobInfoForRepo(long stuckJobGithubJobId,string repoName, string orgGitHubToken)
     {
         using var request = CreateRequest(HttpMethod.Get, $"https://api.github.com/repos/{repoName}/actions/jobs/{stuckJobGithubJobId}", orgGitHubToken);
         HttpResponseMessage response = await SharedClient.SendAsync(request);
@@ -159,10 +159,10 @@ public static class GitHubApi {
             string content = await response.Content.ReadAsStringAsync();
             GitHubApiWorkflowRun responseObject = JsonSerializer.Deserialize<GitHubApiWorkflowRun>(content);
 
-            return responseObject;
+            return (responseObject, response.StatusCode);
         }
         Log.Warning($"Unable to get GH job info for {repoName}/{stuckJobGithubJobId}: [{response.StatusCode}] {response.ReasonPhrase}");
 
-        return null;
+        return (null, response.StatusCode);
     }
 }

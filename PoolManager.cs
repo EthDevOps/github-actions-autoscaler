@@ -607,12 +607,19 @@ public class PoolManager : BackgroundService
             }
 
             // Verify job is still queued on GitHub before treating it as stuck
-            GitHubApiWorkflowRun ghJob = await GitHubApi.GetJobInfoForRepo(stuckJob.GithubJobId, stuckJob.Repository , owner.GitHubToken);
+            var (ghJob, ghStatusCode) = await GitHubApi.GetJobInfoForRepo(stuckJob.GithubJobId, stuckJob.Repository , owner.GitHubToken);
             if (ghJob == null || ghJob.Status != "queued")
             {
-                if (ghJob == null)
+                if (ghJob == null && ghStatusCode == System.Net.HttpStatusCode.NotFound)
                 {
-                    _logger.LogWarning($"GHjob for {stuckJob.JobId} is null - not actually stuck");
+                    _logger.LogWarning($"Job {stuckJob.GithubJobId} not found on GitHub (404) - marking as vanished.");
+                    stuckJob.State = JobState.Vanished;
+                    stuckJob.CompleteTime = DateTime.UtcNow;
+                    await db.SaveChangesAsync();
+                }
+                else if (ghJob == null)
+                {
+                    _logger.LogWarning($"Unable to verify job {stuckJob.JobId} on GitHub (HTTP {(int)ghStatusCode}) - skipping this cycle");
                 }
                 else if (ghJob.Status == "completed")
                 {
@@ -1137,7 +1144,7 @@ public class PoolManager : BackgroundService
                             var targetConfig = Program.Config.TargetConfigs.FirstOrDefault(x => x.Name == runner.Job.Owner);
                             if (targetConfig != null)
                             {
-                                var githubJob = await GitHubApi.GetJobInfoForOrg(runner.Job.GithubJobId, runner.Job.Repository, targetConfig.GitHubToken);
+                                var (githubJob, _) = await GitHubApi.GetJobInfoForOrg(runner.Job.GithubJobId, runner.Job.Repository, targetConfig.GitHubToken);
 
                                 if (githubJob?.Status == "running" || githubJob?.Status == "in_progress")
                                 {
