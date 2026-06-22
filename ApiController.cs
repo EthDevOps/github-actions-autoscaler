@@ -103,14 +103,23 @@ public class ApiController : Controller
 
     [Route("kill-non-processing-runners")]
     [HttpPost]
-    public async Task<IResult> KillNonProcessingRunners()
+    public async Task<IResult> KillNonProcessingRunners([FromQuery] string cloud = null)
     {
         await using var db = new ActionsRunnerContext();
 
-        // Find all runners that are not in Processing state using the lifecycle table
+        // Find all runners that are not in Processing state using the lifecycle table.
+        // Exclude runners with no cloud server (CloudServerId == 0) — nothing to delete on the CSP.
         var excludedStatuses = new[] { RunnerStatus.Processing, RunnerStatus.DeletionQueued, RunnerStatus.Deleted };
-        var runnersToKill = await db.Runners
+        var query = db.Runners
             .AsNoTracking()
+            .Where(r => r.CloudServerId != 0);
+
+        if (!string.IsNullOrEmpty(cloud))
+        {
+            query = query.Where(r => r.Cloud == cloud);
+        }
+
+        var runnersToKill = await query
             .Where(r => db.RunnerLifecycles
                 .Where(rl => rl.RunnerId == r.RunnerId)
                 .Any() &&
@@ -120,7 +129,7 @@ public class ApiController : Controller
                         .OrderByDescending(rl => rl.EventTimeUtc)
                         .Select(rl => rl.Status)
                         .FirstOrDefault()))
-            .Select(r => new { r.RunnerId, r.CloudServerId, r.Hostname })
+            .Select(r => new { r.RunnerId, r.CloudServerId, r.Hostname, r.Cloud })
             .ToListAsync();
 
         // Queue deletion for each runner
@@ -133,10 +142,10 @@ public class ApiController : Controller
             });
         }
 
-        return Results.Json(new 
-        { 
-            message = $"Queued {runnersToKill.Count} runners for deletion",
-            killedRunners = runnersToKill.Select(r => new { r.RunnerId, r.Hostname }).ToList()
+        return Results.Json(new
+        {
+            message = $"Queued {runnersToKill.Count} runners for deletion" + (cloud != null ? $" on cloud '{cloud}'" : ""),
+            killedRunners = runnersToKill.Select(r => new { r.RunnerId, r.Hostname, r.Cloud }).ToList()
         });
     }
 
