@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using GithubActionsOrchestrator.Auth;
 using GithubActionsOrchestrator.CloudControllers;
 using GithubActionsOrchestrator.Database;
 using GithubActionsOrchestrator.GitHub;
@@ -154,6 +155,13 @@ public class Program
              options.JsonSerializerOptions.ReferenceHandler = ReferenceHandler.IgnoreCycles;
          });
 
+        // Teleport JWT verification + authorization for mutating dashboard endpoints.
+        builder.AddTeleportAuth(Config.TeleportAuth);
+        if (Config.TeleportAuth.Enabled)
+            Log.Information("Teleport auth enabled: mutating endpoints require an authorized JWT (JWKS: {Jwks})", Config.TeleportAuth.JwksUrl);
+        else
+            Log.Warning("Teleport auth is DISABLED: mutating endpoints are gated by the API key only.");
+
         builder.Services.AddSingleton<ICloudController, HetznerCloudController>(svc =>
         {
             ILogger<HetznerCloudController> logger = svc.GetRequiredService<ILogger<HetznerCloudController>>();
@@ -205,6 +213,9 @@ public class Program
 
                 await next();
             }));
+
+        app.UseAuthentication();
+        app.UseAuthorization();
 
         app.MapPost("/add-runner", AddRunnerManuallyHandler);
         app.MapPost("/runner-state", RunnerStateReportHandler);

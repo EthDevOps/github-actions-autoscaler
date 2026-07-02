@@ -1,5 +1,7 @@
+using GithubActionsOrchestrator.Auth;
 using GithubActionsOrchestrator.Database;
 using GithubActionsOrchestrator.Models;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -341,6 +343,7 @@ public class ApiController : Controller
 
     [Route("runners/{runnerId}/delete")]
     [HttpPost]
+    [Authorize(Policy = TeleportAuth.CanMutatePolicy)]
     public async Task<IResult> DeleteRunner(int runnerId)
     {
         await using var db = new ActionsRunnerContext();
@@ -373,6 +376,7 @@ public class ApiController : Controller
 
     [Route("runners")]
     [HttpPost]
+    [Authorize(Policy = TeleportAuth.CanMutatePolicy)]
     public async Task<IResult> CreateRunner([FromBody] CreateRunnerRequest request)
     {
         if (request == null || string.IsNullOrWhiteSpace(request.Owner) || string.IsNullOrWhiteSpace(request.Size))
@@ -403,6 +407,7 @@ public class ApiController : Controller
 
     [Route("jobs/{jobId}/reschedule")]
     [HttpPost]
+    [Authorize(Policy = TeleportAuth.CanMutatePolicy)]
     public async Task<IResult> RescheduleJob(int jobId)
     {
         await using var db = new ActionsRunnerContext();
@@ -439,6 +444,7 @@ public class ApiController : Controller
 
     [Route("jobs/{jobId}/cancel")]
     [HttpPost]
+    [Authorize(Policy = TeleportAuth.CanMutatePolicy)]
     public async Task<IResult> CancelJob(int jobId)
     {
         await using var db = new ActionsRunnerContext();
@@ -489,6 +495,7 @@ public class ApiController : Controller
 
     [Route("cleanup-stuck-creation")]
     [HttpPost]
+    [Authorize(Policy = TeleportAuth.CanMutatePolicy)]
     public async Task<IResult> CleanupStuckCreation([FromQuery] int olderThanMinutes = 15)
     {
         olderThanMinutes = Math.Max(0, olderThanMinutes);
@@ -602,6 +609,7 @@ public class ApiController : Controller
 
     [Route("kill-non-processing-runners")]
     [HttpPost]
+    [Authorize(Policy = TeleportAuth.CanMutatePolicy)]
     public async Task<IResult> KillNonProcessingRunners([FromQuery] string cloud = null)
     {
         await using var db = new ActionsRunnerContext();
@@ -650,6 +658,7 @@ public class ApiController : Controller
 
     [Route("clear-creation-queue")]
     [HttpPost]
+    [Authorize(Policy = TeleportAuth.CanMutatePolicy)]
     public async Task<IResult> ClearCreationQueue()
     {
         await using var db = new ActionsRunnerContext();
@@ -667,5 +676,23 @@ public class ApiController : Controller
     public IResult Health()
     {
         return Results.Ok(new { status = "healthy" });
+    }
+
+    // Identity of the caller (from the verified Teleport JWT, if present) plus whether
+    // they may run mutating actions. The frontend uses this to gate its action buttons.
+    [Route("me")]
+    [HttpGet]
+    public IResult Me()
+    {
+        var cfg = Program.Config.TeleportAuth;
+        bool authenticated = User?.Identity?.IsAuthenticated == true;
+        return Results.Json(new
+        {
+            authEnabled = cfg.Enabled,
+            authenticated,
+            user = authenticated ? TeleportAuth.GetUsername(User) : null,
+            roles = authenticated ? TeleportAuth.GetRoles(User).Distinct().ToArray() : Array.Empty<string>(),
+            canMutate = !cfg.Enabled || TeleportAuth.IsAuthorizedToMutate(User, cfg),
+        });
     }
 }
