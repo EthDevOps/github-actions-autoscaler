@@ -1,3 +1,5 @@
+using System.Text;
+using System.Text.Json;
 using GithubActionsOrchestrator.Auth;
 using GithubActionsOrchestrator.Database;
 using GithubActionsOrchestrator.Models;
@@ -676,6 +678,82 @@ public class ApiController : Controller
     public IResult Health()
     {
         return Results.Ok(new { status = "healthy" });
+    }
+
+    // Debug helper for tuning Teleport auth. Decodes the incoming JWT WITHOUT verifying
+    // its signature so you can read the real iss/aud/roles/sub claim names/values even
+    // when validation is currently failing, and compares them to what's configured.
+    // Only ever exposes the caller's OWN token. API-key gated like the rest of /api.
+    [Route("auth-debug")]
+    [HttpGet]
+    public IResult AuthDebug()
+    {
+        var cfg = Program.Config.TeleportAuth;
+        string raw = Request.Headers[TeleportAuth.JwtHeader].FirstOrDefault();
+
+        object tokenHeader = null;
+        object tokenClaims = null;
+        string decodeError = null;
+        if (!string.IsNullOrEmpty(raw))
+        {
+            try
+            {
+                var parts = raw.Split('.');
+                if (parts.Length >= 2)
+                {
+                    tokenHeader = JsonSerializer.Deserialize<JsonElement>(DecodeJwtSegment(parts[0]));
+                    tokenClaims = JsonSerializer.Deserialize<JsonElement>(DecodeJwtSegment(parts[1]));
+                }
+                else
+                {
+                    decodeError = "Header present but not a well-formed JWT (expected 3 dot-separated parts).";
+                }
+            }
+            catch (Exception ex)
+            {
+                decodeError = ex.Message;
+            }
+        }
+
+        return Results.Json(new
+        {
+            // What the orchestrator is currently configured to expect.
+            expected = new
+            {
+                enabled = cfg.Enabled,
+                jwksUrl = cfg.JwksUrl,
+                issuer = cfg.Issuer,
+                audience = cfg.Audience,
+                authorizedRoles = cfg.AuthorizedRoles,
+                authorizedUsers = cfg.AuthorizedUsers,
+            },
+            // Whether Teleport actually forwarded a token to us.
+            headerName = TeleportAuth.JwtHeader,
+            headerPresent = !string.IsNullOrEmpty(raw),
+            // Decoded but UNVERIFIED — read iss/aud/roles/sub/kid here to fill in config.
+            tokenHeader,
+            tokenClaims,
+            decodeError,
+            // Result of real verification (empty/false when validation fails).
+            validated = new
+            {
+                authenticated = User?.Identity?.IsAuthenticated == true,
+                user = TeleportAuth.GetUsername(User),
+                roles = TeleportAuth.GetRoles(User).Distinct().ToArray(),
+                canMutate = TeleportAuth.IsAuthorizedToMutate(User, cfg),
+            },
+        });
+    }
+
+    private static string DecodeJwtSegment(string segment)
+    {
+        string s = segment.Replace('-', '+').Replace('_', '/');
+        switch (s.Length % 4)
+        {
+            case 2: s += "=="; break;
+            case 3: s += "="; break;
+        }
+        return Encoding.UTF8.GetString(Convert.FromBase64String(s));
     }
 
     // Identity of the caller (from the verified Teleport JWT, if present) plus whether
