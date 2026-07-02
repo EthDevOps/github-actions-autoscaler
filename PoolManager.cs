@@ -134,6 +134,16 @@ public class PoolManager : BackgroundService
 
                 await CleanupDatabase();
 
+                try
+                {
+                    await CleanupStuckCreationQueuedRunners();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError($"Unable to clean up creation-queued runners: {ex.GetFullExceptionDetails()}");
+                    SentrySdk.CaptureException(ex);
+                }
+
                 foreach (var ban in _bannedClouds.ToList())
                 {
                     if (ban.UnbanTime < DateTime.UtcNow)
@@ -278,6 +288,63 @@ public class PoolManager : BackgroundService
             db.Jobs.RemoveRange(oldCompletedJobs);
             await db.SaveChangesAsync();
         }
+    }
+
+    // Runners can be left in "CreationQueued" forever if their create task was lost
+    // (e.g. the creation queue was cleared) — they never progress and pile up. Clean up
+    // any that have sat in CreationQueued past the threshold with no pending create task
+    // and no active tracking entry. They have no cloud VM (CloudServerId == 0) in the
+    // normal case, so we just mark them failed; a VM is only deleted if one exists.
+    private async Task CleanupStuckCreationQueuedRunners()
+    {
+        using var activity = Program.OrchestratorActivitySource.StartActivity("maintenance.cleanup_creation_queued");
+
+        await using var db = new ActionsRunnerContext();
+        var cutoffTime = DateTime.UtcNow - TimeSpan.FromMinutes(30);
+
+        var abandoned = await db.Runners
+            .AsNoTracking()
+            .Where(r =>
+                db.RunnerLifecycles.Where(rl => rl.RunnerId == r.RunnerId)
+                    .OrderByDescending(rl => rl.EventTimeUtc).First().Status == RunnerStatus.CreationQueued
+                && db.RunnerLifecycles.Where(rl => rl.RunnerId == r.RunnerId)
+                    .OrderByDescending(rl => rl.EventTimeUtc).First().EventTimeUtc < cutoffTime
+                && !db.CreateTaskQueues.Any(ct => ct.RunnerDbId == r.RunnerId)
+                && !db.CreatedRunnersTrackings.Any(crt => crt.RunnerDbId == r.RunnerId))
+            .Select(r => new { r.RunnerId, r.CloudServerId, r.Hostname })
+            .ToListAsync();
+
+        activity?.SetTag("abandoned_creation.count", abandoned.Count);
+
+        if (abandoned.Count == 0)
+            return;
+
+        var lifecycleEntries = new List<RunnerLifecycle>();
+        foreach (var r in abandoned)
+        {
+            if (r.CloudServerId != 0)
+            {
+                _queues.DeleteTasks.Enqueue(new DeleteRunnerTask
+                {
+                    ServerId = r.CloudServerId,
+                    RunnerDbId = r.RunnerId
+                });
+            }
+
+            lifecycleEntries.Add(new RunnerLifecycle
+            {
+                RunnerId = r.RunnerId,
+                EventTimeUtc = DateTime.UtcNow,
+                Status = RunnerStatus.Failure,
+                Event = "Abandoned in creation queue (no pending task). Cleaning up."
+            });
+
+            _logger.LogWarning($"Cleaning up runner abandoned in creation queue: {r.Hostname} (id {r.RunnerId})");
+        }
+
+        db.ChangeTracker.AutoDetectChangesEnabled = false;
+        db.RunnerLifecycles.AddRange(lifecycleEntries);
+        await db.SaveChangesAsync();
     }
 
     private async Task CheckForStuckRunners(List<GithubTargetConfiguration> targetConfig)

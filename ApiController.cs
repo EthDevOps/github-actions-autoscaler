@@ -113,7 +113,7 @@ public class ApiController : Controller
 
         await using var db = new ActionsRunnerContext();
 
-        IQueryable<Job> query = db.Jobs;
+        IQueryable<Job> query = db.Jobs.Include(j => j.Runner);
 
         if (!string.IsNullOrWhiteSpace(search))
         {
@@ -153,7 +153,34 @@ public class ApiController : Controller
             _ => desc ? query.OrderByDescending(j => j.JobId) : query.OrderBy(j => j.JobId),
         };
 
-        var items = await query.Skip(offset).Take(limit).ToListAsync();
+        var jobs = await query.Skip(offset).Take(limit).ToListAsync();
+
+        // Project a lightweight runner summary so the jobs view can show the assigned
+        // runner and link to its details, without serializing the full runner graph.
+        var items = jobs.Select(j => new
+        {
+            j.JobId,
+            j.GithubJobId,
+            j.Repository,
+            j.Owner,
+            j.State,
+            j.QueueTime,
+            j.InProgressTime,
+            j.CompleteTime,
+            j.JobUrl,
+            j.Orphan,
+            j.RequestedProfile,
+            j.RequestedSize,
+            j.RunnerId,
+            Runner = j.Runner == null ? null : new
+            {
+                j.Runner.RunnerId,
+                j.Runner.Hostname,
+                j.Runner.IsOnline,
+                j.Runner.Cloud
+            }
+        });
+
         return Results.Json(new { items, total });
     }
 
@@ -408,6 +435,102 @@ public class ApiController : Controller
             message = $"Replacement runner queued for job {jobId} ({job.Repository}).",
             runnerId
         });
+    }
+
+    [Route("jobs/{jobId}/cancel")]
+    [HttpPost]
+    public async Task<IResult> CancelJob(int jobId)
+    {
+        await using var db = new ActionsRunnerContext();
+        var job = await db.Jobs.FirstOrDefaultAsync(x => x.JobId == jobId);
+        if (job == null)
+            return Results.NotFound(new { message = $"Job {jobId} not found" });
+
+        if (job.State is JobState.Completed or JobState.Cancelled or JobState.Vanished)
+            return Results.Json(new { message = $"Job {jobId} is already {job.State}." });
+
+        JobState previous = job.State;
+        job.State = JobState.Cancelled;
+        job.CompleteTime = DateTime.UtcNow;
+
+        // Stop provisioning runners for a job the operator just killed: drop any pending
+        // stuck-replacement create tasks for it and cancel their not-yet-provisioned runners.
+        var pendingTasks = await db.CreateTaskQueues
+            .Where(t => t.IsStuckReplacement && t.StuckJobId == job.JobId)
+            .ToListAsync();
+
+        int cancelledRunners = 0;
+        foreach (var task in pendingTasks)
+        {
+            var runner = await db.Runners.Include(r => r.Lifecycle).FirstOrDefaultAsync(r => r.RunnerId == task.RunnerDbId);
+            if (runner != null && runner.CloudServerId == 0)
+            {
+                runner.Lifecycle.Add(new RunnerLifecycle
+                {
+                    EventTimeUtc = DateTime.UtcNow,
+                    Status = RunnerStatus.Cancelled,
+                    Event = $"Job {job.JobId} cancelled via dashboard API"
+                });
+                cancelledRunners++;
+            }
+        }
+
+        if (pendingTasks.Count > 0)
+            db.CreateTaskQueues.RemoveRange(pendingTasks);
+
+        await db.SaveChangesAsync();
+
+        _logger.LogWarning($"Job {jobId} ({job.Repository}) cancelled via dashboard API (was {previous}). " +
+                           $"Dropped {pendingTasks.Count} pending task(s), cancelled {cancelledRunners} runner(s).");
+
+        string extra = pendingTasks.Count > 0 ? $" Dropped {pendingTasks.Count} pending runner task(s)." : "";
+        return Results.Json(new { message = $"Job {jobId} cancelled.{extra}" });
+    }
+
+    [Route("cleanup-stuck-creation")]
+    [HttpPost]
+    public async Task<IResult> CleanupStuckCreation([FromQuery] int olderThanMinutes = 15)
+    {
+        olderThanMinutes = Math.Max(0, olderThanMinutes);
+        await using var db = new ActionsRunnerContext();
+        DateTime cutoff = DateTime.UtcNow - TimeSpan.FromMinutes(olderThanMinutes);
+
+        // Runners stuck in CreationQueued past the cutoff with no pending create task and
+        // no active tracking entry are leftovers of failed/cleared creation attempts.
+        var abandoned = await db.Runners
+            .Include(r => r.Lifecycle)
+            .Where(r =>
+                db.RunnerLifecycles.Where(rl => rl.RunnerId == r.RunnerId)
+                    .OrderByDescending(rl => rl.EventTimeUtc).First().Status == RunnerStatus.CreationQueued
+                && db.RunnerLifecycles.Where(rl => rl.RunnerId == r.RunnerId)
+                    .OrderByDescending(rl => rl.EventTimeUtc).First().EventTimeUtc < cutoff
+                && !db.CreateTaskQueues.Any(ct => ct.RunnerDbId == r.RunnerId)
+                && !db.CreatedRunnersTrackings.Any(crt => crt.RunnerDbId == r.RunnerId))
+            .ToListAsync();
+
+        foreach (var runner in abandoned)
+        {
+            runner.Lifecycle.Add(new RunnerLifecycle
+            {
+                EventTimeUtc = DateTime.UtcNow,
+                Status = RunnerStatus.Failure,
+                Event = "Abandoned in creation queue (no pending task). Cleaned up via dashboard API."
+            });
+
+            if (runner.CloudServerId != 0)
+            {
+                _runnerQueue.DeleteTasks.Enqueue(new DeleteRunnerTask
+                {
+                    ServerId = runner.CloudServerId,
+                    RunnerDbId = runner.RunnerId
+                });
+            }
+        }
+
+        await db.SaveChangesAsync();
+
+        _logger.LogWarning($"Cleaned up {abandoned.Count} runners abandoned in creation queue (older than {olderThanMinutes}m) via dashboard API");
+        return Results.Json(new { message = $"Cleaned up {abandoned.Count} abandoned creation-queued runner(s).", count = abandoned.Count });
     }
 
     private async Task<int> CreateRunnerInternal(string owner, string size, string profile, string arch,
