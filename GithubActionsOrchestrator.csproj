@@ -9,8 +9,8 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <PackageReference Include="HetznerCloud.API" Version="1.1.9" />
         <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.9" />
+        <ProjectReference Include="..\HetznerCloud.API\HetznerCloudApi\HetznerCloudApi.csproj" />
         <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.9">
           <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
           <PrivateAssets>all</PrivateAssets>
@@ -34,6 +34,7 @@
 
     <ItemGroup>
         <Compile Remove="GithubActionsOrchestrator.IntegrationTests/**" />
+        <Content Remove="GithubActionsOrchestrator.IntegrationTests/**" />
         <EmbeddedResource Remove="GithubActionsOrchestrator.IntegrationTests/**" />
         <None Remove="GithubActionsOrchestrator.IntegrationTests/**" />
     </ItemGroup>

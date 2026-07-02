@@ -6,11 +6,20 @@ EXPOSE 8081
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 ARG BUILD_CONFIGURATION=Release
+
+# The app references a fork of HetznerCloud.API via <ProjectReference> as a sibling
+# directory. Clone it next to the app so the relative path resolves during build.
+# For a private repo, pass a tokenized URL, e.g.:
+#   --build-arg HETZNERCLOUDAPI_REPO=https://x-access-token:$TOKEN@github.com/EthDevOps/HetznerCloud.API.git
+ARG HETZNERCLOUDAPI_REPO=https://github.com/EthDevOps/HetznerCloud.API.git
+ARG HETZNERCLOUDAPI_REF=master
 WORKDIR /src
+RUN git clone --depth 1 --branch "$HETZNERCLOUDAPI_REF" "$HETZNERCLOUDAPI_REPO" HetznerCloud.API
+
+WORKDIR /src/GithubActionsOrchestrator
 COPY ["GithubActionsOrchestrator.csproj", "./"]
 RUN dotnet restore "GithubActionsOrchestrator.csproj"
 COPY . .
-WORKDIR "/src/"
 RUN dotnet build "GithubActionsOrchestrator.csproj" -c $BUILD_CONFIGURATION -o /app/build
 
 FROM build AS publish
