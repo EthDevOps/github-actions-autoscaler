@@ -182,6 +182,30 @@ public class Program
         WebApplication app = builder.Build();
         app.UseCors("AllowAll");
 
+        // API key authentication for the dashboard/data API (/api/*).
+        // Skipped for the health check and disabled entirely when no ApiKey is configured (local dev).
+        app.UseWhen(
+            ctx => ctx.Request.Path.StartsWithSegments("/api")
+                   && !ctx.Request.Path.StartsWithSegments("/api/health"),
+            branch => branch.Use(async (ctx, next) =>
+            {
+                string configuredKey = Program.Config.ApiKey;
+                if (!string.IsNullOrEmpty(configuredKey))
+                {
+                    string provided = ctx.Request.Headers["X-API-KEY"].FirstOrDefault();
+                    bool ok = !string.IsNullOrEmpty(provided) && CryptographicOperations.FixedTimeEquals(
+                        Encoding.UTF8.GetBytes(provided), Encoding.UTF8.GetBytes(configuredKey));
+                    if (!ok)
+                    {
+                        ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                        await ctx.Response.WriteAsJsonAsync(new { message = "Invalid or missing API key" });
+                        return;
+                    }
+                }
+
+                await next();
+            }));
+
         app.MapPost("/add-runner", AddRunnerManuallyHandler);
         app.MapPost("/runner-state", RunnerStateReportHandler);
         app.MapPost("/github-webhook", GithubWebhookHandler);
