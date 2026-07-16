@@ -564,17 +564,20 @@ public class PoolManager : BackgroundService
                 .Include(x => x.Lifecycle)
                 .Where(x => x.Owner == owner.Name)
                 .ToListAsync();
-            // Count runners that are still alive (not yet deleted/failed/cancelled)
-            activeRunners = activeRunners.Where(x => x.LastState < RunnerStatus.DeletionQueued).ToList();
+            // Only count runners that are still available to the pool: queued, created or provisioned.
+            // A runner that is already Processing a job will be deleted afterwards, so it no longer
+            // counts towards the idle pool.
+            activeRunners = activeRunners.Where(x => x.LastState < RunnerStatus.Processing).ToList();
 
             foreach (Pool pool in owner.Pools)
             {
-                int existCt = activeRunners.Count(x => x.Size == pool.Size);
+                string poolProfile = pool.Profile ?? "default";
+                int existCt = activeRunners.Count(x => x.Size == pool.Size && x.Profile == poolProfile);
                 int missingCt = pool.NumRunners - existCt;
 
                 string arch = Program.Config.Sizes.FirstOrDefault(x => x.Name == pool.Size)?.Arch;
 
-                _logger.LogInformation($"Checking pool {pool.Size} [{arch}]: Existing={existCt} Requested={pool.NumRunners} Missing={missingCt}");
+                _logger.LogInformation($"Checking pool {pool.Size}/{poolProfile} [{arch}]: Existing={existCt} Requested={pool.NumRunners} Missing={missingCt}");
 
                 for (int i = 0; i < missingCt; i++)
                 {
@@ -586,13 +589,12 @@ public class PoolManager : BackgroundService
                     }
 
                     // Queue VM creation
-                    var profile = pool.Profile ?? "default";
                     Runner newRunner = new()
                     {
                         Size = pool.Size,
                         Cloud = "htz",
                         Hostname = "Unknown",
-                        Profile = profile,
+                        Profile = poolProfile,
                         Lifecycle =
                         [
                             new RunnerLifecycle
@@ -605,7 +607,7 @@ public class PoolManager : BackgroundService
                         IsOnline = false,
                         Arch = arch,
                         IPv4 = string.Empty,
-                        IsCustom = profile != "default",
+                        IsCustom = poolProfile != "default",
                         Owner = owner.Name
                     };
                     await db.Runners.AddAsync(newRunner);
