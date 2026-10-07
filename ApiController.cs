@@ -336,6 +336,9 @@ public class ApiController : Controller
             repositories = repositories.Where(x => !string.IsNullOrEmpty(x)),
             configuredTargets = Program.Config.TargetConfigs?
                 .Select(t => new { name = t.Name, target = t.Target.ToString() }),
+            // Only configured sizes/profiles can be used to create a runner
+            configuredSizes = Program.Config.Sizes?.Select(s => s.Name).Distinct().Order(),
+            configuredProfiles = Program.Config.Profiles?.Select(p => p.Name).Order(),
         });
     }
 
