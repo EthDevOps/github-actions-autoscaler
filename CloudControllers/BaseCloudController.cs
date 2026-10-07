@@ -34,11 +34,18 @@ public class BaseCloudController
         _metricPassword = metricPassword;
     }
 
-    protected string GenerateCloudInit(string targetName, string runnerToken, string size, RunnerProfile profile, bool isCustom,string arch)
+    protected string GenerateCloudInit(string targetName, string runnerToken, string size, RunnerProfile profile, bool isCustom,string arch, string hostname = null)
     {
         string customEnv = isCustom ? "1" : "0";
-        string cloudInitcontent = new StringBuilder()
-            .AppendLine("#cloud-config")
+        var sb = new StringBuilder().AppendLine("#cloud-config");
+        if (hostname != null)
+        {
+            // For CSPs that don't derive the hostname from the server name (AWS: ip-x-x-x-x).
+            // Provisioning reports state and registers the GH runner by $(hostname).
+            sb.AppendLine($"hostname: {hostname}")
+              .AppendLine("manage_etc_hosts: true");
+        }
+        string cloudInitcontent = sb
             .AppendLine("write_files:")
             .AppendLine("  - path: /data/config.env")
             .AppendLine("    content: |")

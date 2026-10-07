@@ -127,7 +127,7 @@ public class AwsCloudController : BaseCloudController, ICloudController
 
         _logger.LogInformation($"Creating AWS instance {name} from image {image.Name} ({image.ImageId}) of size {size} for {targetName}");
 
-        string cloudInitContent = GenerateCloudInit(targetName, runnerToken, size, profile, isCustom, arch);
+        string cloudInitContent = GenerateCloudInit(targetName, runnerToken, size, profile, isCustom, arch, name);
         string userData = Convert.ToBase64String(Encoding.UTF8.GetBytes(cloudInitContent));
 
         // Subnet (= AZ) failover loop - mirrors Hetzner DC pattern
