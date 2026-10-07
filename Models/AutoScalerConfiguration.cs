@@ -69,6 +69,29 @@ public class AutoScalerConfiguration
 
     public string DigitalOceanDefaultImage { get; set; } = "ubuntu-24-04-x64";
 
+    /// <summary>AWS region, e.g. eu-central-1. AWS controller is only enabled when set.</summary>
+    public string AwsRegion { get; set; }
+
+    /// <summary>Optional static credentials. When empty, the default AWS credential chain (env, IAM role, ...) is used.</summary>
+    [JsonConverter(typeof(EnvironmentAwareJsonConverter<string>))]
+    public string AwsAccessKeyId { get; set; }
+
+    [JsonConverter(typeof(EnvironmentAwareJsonConverter<string>))]
+    public string AwsSecretAccessKey { get; set; }
+
+    /// <summary>Subnets (ideally one per AZ) tried in order when capacity is unavailable.</summary>
+    public List<string> AwsSubnetIds { get; set; } = new();
+
+    public List<string> AwsSecurityGroupIds { get; set; } = new();
+
+    /// <summary>Optional EC2 key pair name for SSH access.</summary>
+    public string AwsKeyName { get; set; }
+
+    public int AwsRootVolumeSizeGb { get; set; } = 100;
+
+    /// <summary>Upstream Ubuntu release used when the profile OS image is not mapped.</summary>
+    public string AwsDefaultImage { get; set; } = "ubuntu-noble-24.04";
+
     /// <summary>
     /// Teleport-based authorization for mutating dashboard API calls. When disabled,
     /// mutating endpoints fall back to the API key only.

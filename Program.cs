@@ -187,6 +187,18 @@ public class Program
             });
         }
 
+        if (!string.IsNullOrWhiteSpace(Config.AwsRegion))
+        {
+            builder.Services.AddSingleton<ICloudController, AwsCloudController>(svc =>
+            {
+                var logger = svc.GetRequiredService<ILogger<AwsCloudController>>();
+                return new AwsCloudController(logger, Config.AwsRegion, Config.AwsAccessKeyId,
+                    Config.AwsSecretAccessKey, Config.Sizes, Config.ProvisionScriptBaseUrl, Config.MetricUser,
+                    Config.MetricPassword, Config.AwsSubnetIds, Config.AwsSecurityGroupIds, Config.AwsKeyName,
+                    Config.AwsRootVolumeSizeGb, Config.AwsDefaultImage);
+            });
+        }
+
         WebApplication app = builder.Build();
         app.UseCors("AllowAll");
 
