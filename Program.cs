@@ -585,7 +585,8 @@ public class Program
                     Runner newRunner = new()
                     {
                         Size = runner.Size,
-                        Cloud = runner.Cloud,
+                        // Cloud is only known once the PoolManager picked a provider
+                        Cloud = "ukn",
                         Hostname = "Unknown",
                         Profile = runner.Profile,
                         Lifecycle =
@@ -941,7 +942,8 @@ public class Program
         Runner newRunner = new()
         {
             Size = size,
-            Cloud = "htz",
+            // Cloud is only known once the PoolManager picked a provider
+            Cloud = "ukn",
             Hostname = "Unknown",
             Profile = profileName,
             Lifecycle =

@@ -592,7 +592,8 @@ public class PoolManager : BackgroundService
                     Runner newRunner = new()
                     {
                         Size = pool.Size,
-                        Cloud = "htz",
+                        // Cloud is only known once the PoolManager picked a provider
+                        Cloud = "ukn",
                         Hostname = "Unknown",
                         Profile = poolProfile,
                         Lifecycle =
@@ -764,7 +765,8 @@ public class PoolManager : BackgroundService
             Runner newRunner = new()
             {
                 Size = stuckJob.RequestedSize,
-                Cloud = "htz",
+                // Cloud is only known once the PoolManager picked a provider
+                Cloud = "ukn",
                 Hostname = "Unknown",
                 Profile = profile,
                 Lifecycle =

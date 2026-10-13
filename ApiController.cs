@@ -553,7 +553,8 @@ public class ApiController : Controller
         Runner newRunner = new()
         {
             Size = size,
-            Cloud = "htz",
+            // Cloud is only known once the PoolManager picked a provider
+            Cloud = "ukn",
             Hostname = "Unknown",
             Profile = profile,
             Lifecycle =
