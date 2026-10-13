@@ -9,6 +9,7 @@ public interface ICloudController
     Task DeleteRunner(long serverId);
     Task<List<CspServer>> GetAllServersFromCsp();
     Task<int> GetServerCountFromCsp();
+    Task<string> GetRunnerIpAddress(long serverId);
     
     string CloudIdentifier { get; }
 }

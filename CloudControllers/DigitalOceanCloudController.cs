@@ -217,26 +217,20 @@ public class DigitalOceanCloudController : BaseCloudController, ICloudController
         var droplet = dropletJson.Value.GetProperty("droplet");
         long dropletId = droplet.GetProperty("id").GetInt64();
 
-        // The droplet may not have an IP immediately — try to read it
+        // The droplet may not have an IP immediately — read it from the create response,
+        // or poll the droplet resource until the public IP is assigned
         string ipv4 = string.Empty;
-        if (droplet.TryGetProperty("networks", out var networks) &&
-            networks.TryGetProperty("v4", out var v4Array))
+        if (!TryGetPublicIpv4(droplet, out ipv4))
         {
-            foreach (var net in v4Array.EnumerateArray())
-            {
-                if (net.GetProperty("type").GetString() == "public")
-                {
-                    ipv4 = net.GetProperty("ip_address").GetString();
-                    break;
-                }
-            }
+            _logger.LogDebug($"DO droplet {name} ({dropletId}) has no public IP in the create response, waiting for it...");
+            ipv4 = await WaitForPublicIp(dropletId, name);
         }
 
         return new Machine
         {
             Id = dropletId,
             Name = name,
-            Ipv4 = ipv4 ?? string.Empty,
+            Ipv4 = ipv4,
             CreatedAt = DateTime.UtcNow,
             TargetName = targetName,
             Size = size,
@@ -244,6 +238,51 @@ public class DigitalOceanCloudController : BaseCloudController, ICloudController
             Profile = profileName,
             IsCustom = isCustom
         };
+    }
+
+    private static bool TryGetPublicIpv4(JsonElement droplet, out string ipv4)
+    {
+        ipv4 = string.Empty;
+        if (droplet.TryGetProperty("networks", out var networks) &&
+            networks.TryGetProperty("v4", out var v4Array))
+        {
+            foreach (var net in v4Array.EnumerateArray())
+            {
+                if (net.GetProperty("type").GetString() == "public")
+                {
+                    ipv4 = net.GetProperty("ip_address").GetString() ?? string.Empty;
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private async Task<string> WaitForPublicIp(long dropletId, string name, int timeoutSeconds = 60, int pollSeconds = 2)
+    {
+        var endTime = DateTime.UtcNow.AddSeconds(timeoutSeconds);
+
+        while (DateTime.UtcNow < endTime)
+        {
+            try
+            {
+                string ip = await GetRunnerIpAddress(dropletId);
+                if (!string.IsNullOrEmpty(ip))
+                {
+                    _logger.LogInformation($"DO droplet {name} ({dropletId}) has public IP {ip}");
+                    return ip;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug($"Failed to get IP for DO droplet {dropletId}: {ex.Message}");
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(pollSeconds));
+        }
+
+        _logger.LogWarning($"Timed out after {timeoutSeconds}s waiting for public IP of DO droplet {name} ({dropletId})");
+        return string.Empty;
     }
 
     private string MapOsImage(string profileOsImageName)
@@ -328,6 +367,18 @@ public class DigitalOceanCloudController : BaseCloudController, ICloudController
     public async Task<int> GetServerCountFromCsp()
     {
         return (await GetAllServersFromCsp()).Count;
+    }
+
+    public async Task<string> GetRunnerIpAddress(long serverId)
+    {
+        var result = await DoApiCall($"/v2/droplets/{serverId}");
+        if (result.TryGetProperty("droplet", out var droplet) &&
+            TryGetPublicIpv4(droplet, out string ipv4))
+        {
+            return ipv4;
+        }
+
+        return string.Empty;
     }
 
     public string CloudIdentifier => "do";

@@ -526,18 +526,21 @@ public class Program
                     EventTimeUtc = DateTime.UtcNow
                 });
                 
-                // Update the runner's IP address if using Proxmox and IP is still dummy
-                if (runner.Cloud == "pve" && (string.IsNullOrEmpty(runner.IPv4) || runner.IPv4 == "0.0.0.0/0"))
+                // Update the runner's IP address if it's still missing or a dummy value
+                // (e.g. AWS/DO public IPs that were not yet assigned when the machine was created)
+                if (string.IsNullOrEmpty(runner.IPv4) || runner.IPv4 == "0.0.0.0/0")
                 {
                     try
                     {
-                        var cloudControllers = serviceProvider.GetServices<ICloudController>();
-                        if (cloudControllers.FirstOrDefault(x => x.CloudIdentifier == "pve") is ProxmoxCloudController proxmoxController)
+                        var cloudController = serviceProvider.GetServices<ICloudController>()
+                            .FirstOrDefault(x => x.CloudIdentifier == runner.Cloud);
+                        if (cloudController != null)
                         {
-                            var actualIpAddress = await proxmoxController.UpdateRunnerIpAddressAsync(runner.CloudServerId);
-                            if (actualIpAddress != "0.0.0.0/0")
+                            var actualIpAddress = await cloudController.GetRunnerIpAddress(runner.CloudServerId);
+                            if (!string.IsNullOrEmpty(actualIpAddress) && actualIpAddress != "0.0.0.0/0")
                             {
                                 runner.IPv4 = actualIpAddress;
+                                logger.LogInformation($"Updated IP for runner {runner.Hostname} ({runner.Cloud}) to {actualIpAddress}");
                                 await db.SaveChangesAsync();
                             }
                         }

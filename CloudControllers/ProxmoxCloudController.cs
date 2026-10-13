@@ -265,6 +265,11 @@ public class ProxmoxCloudController : BaseCloudController, ICloudController
         return "0.0.0.0/0";
     }
 
+    public Task<string> GetRunnerIpAddress(long serverId)
+    {
+        return UpdateRunnerIpAddressAsync(serverId);
+    }
+
     public async Task<string> UpdateRunnerIpAddressAsync(long cloudServerId)
     {
         await _semaphore.WaitAsync();

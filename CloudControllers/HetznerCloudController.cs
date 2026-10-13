@@ -202,5 +202,19 @@ public class HetznerCloudController : BaseCloudController, ICloudController
         return (await GetAllServersFromCsp()).Count;
     }
 
+    public async Task<string> GetRunnerIpAddress(long serverId)
+    {
+        try
+        {
+            Server srv = await _client.Server.Get(serverId);
+            return srv.PublicNet.Ipv4.Ip ?? string.Empty;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning($"Unable to get IP for Hetzner server {serverId}: {ex.Message}");
+            return string.Empty;
+        }
+    }
+
     public string CloudIdentifier => "htz";
 }
