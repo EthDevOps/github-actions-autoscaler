@@ -3,6 +3,7 @@ using System.Text.Json;
 using GithubActionsOrchestrator.Auth;
 using GithubActionsOrchestrator.Database;
 using GithubActionsOrchestrator.Models;
+using GithubActionsOrchestrator.Warpgate;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -16,12 +17,19 @@ public class ApiController : Controller
 
     private readonly RunnerQueue _runnerQueue;
     private readonly ILogger<ApiController> _logger;
+    private readonly ILoggerFactory _loggerFactory;
 
-    public ApiController(RunnerQueue runnerQueue, ILogger<ApiController> logger)
+    public ApiController(RunnerQueue runnerQueue, ILogger<ApiController> logger, ILoggerFactory loggerFactory)
     {
         _runnerQueue = runnerQueue;
         _logger = logger;
+        _loggerFactory = loggerFactory;
     }
+
+    /// <summary>
+    /// Built from the current config on each access so config hot-reloads are respected.
+    /// </summary>
+    private WarpgateClient Warpgate => new(Program.Config.Warpgate, _loggerFactory.CreateLogger<WarpgateClient>());
 
     // ---------------------------------------------------------------------
     // Lists (server-side filtering, sorting and pagination)
@@ -302,6 +310,7 @@ public class ApiController : Controller
                 total = runnerStates.Count,
                 online = onlineRunners,
                 active = activeRunners,
+                held = await db.Runners.CountAsync(r => r.IsHeld),
                 byState = runnersByState,
                 byCloud = runnersByCloud.ToDictionary(g => g.Cloud ?? "unknown", g => g.Count),
             },
@@ -339,6 +348,14 @@ public class ApiController : Controller
             // Only configured sizes/profiles can be used to create a runner
             configuredSizes = Program.Config.Sizes?.Select(s => s.Name).Distinct().Order(),
             configuredProfiles = Program.Config.Profiles?.Select(p => p.Name).Order(),
+            // Non-sensitive Warpgate coordinates for the inspect feature (connect command in the UI)
+            warpgate = new
+            {
+                enabled = Program.Config.Warpgate?.Enabled ?? false,
+                accessRole = Program.Config.Warpgate?.AccessRole,
+                gatewaySshHost = Program.Config.Warpgate?.GatewaySshHost,
+                gatewaySshPort = Program.Config.Warpgate?.GatewaySshPort,
+            },
         });
     }
 
@@ -359,11 +376,42 @@ public class ApiController : Controller
         if (runner.LastState is RunnerStatus.DeletionQueued or RunnerStatus.Deleted)
             return Results.Json(new { message = $"Runner {runnerId} is already {runner.LastState}." });
 
+        string who = TeleportAuth.GetUsername(User) ?? "unknown";
+        string eventText = "Deletion requested via dashboard API";
+
+        // A runner held for inspection must be cleaned up in Warpgate before the VM goes
+        // away: drop the target first so SSH access stops as soon as the operator confirms.
+        if (runner.IsHeld)
+        {
+            string extra = "";
+            var wgConfig = Program.Config.Warpgate;
+            if (wgConfig?.Enabled == true)
+            {
+                try
+                {
+                    bool removed = await Warpgate.RemoveInspectionTargetAsync(runner.Hostname);
+                    extra = removed
+                        ? " Warpgate target removed."
+                        : " Warpgate target was not found (nothing to remove).";
+                }
+                catch (WarpgateException ex)
+                {
+                    // Do not block the deletion - but the operator needs to know the
+                    // Warpgate target is dangling.
+                    _logger.LogError("Warpgate target removal for {Runner} failed: {Error}", runner.Hostname, ex.Message);
+                    extra = $" WARNING: Warpgate target removal failed ({ex.Message}) - remove it in Warpgate manually.";
+                }
+            }
+
+            runner.IsHeld = false;
+            eventText = $"Inspection hold released by {who} via dashboard API.{extra}";
+        }
+
         runner.Lifecycle.Add(new RunnerLifecycle
         {
             EventTimeUtc = DateTime.UtcNow,
             Status = RunnerStatus.DeletionQueued,
-            Event = "Deletion requested via dashboard API"
+            Event = eventText
         });
         await db.SaveChangesAsync();
 
@@ -373,8 +421,91 @@ public class ApiController : Controller
             RunnerDbId = runner.RunnerId
         });
 
-        _logger.LogWarning($"Runner {runnerId} ({runner.Hostname}) queued for deletion via dashboard API");
-        return Results.Json(new { message = $"Runner {runnerId} ({runner.Hostname}) queued for deletion." });
+        _logger.LogWarning($"Runner {runnerId} ({runner.Hostname}) queued for deletion via dashboard API by {who}");
+        return Results.Json(new { message = $"Runner {runnerId} ({runner.Hostname}) queued for deletion.{(eventText.Contains("WARNING") ? " Check the warnings above - Warpgate cleanup may need manual follow-up." : "")}" });
+    }
+
+    // ------------------------------------------------------------------
+    // Hold / inspect
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// Marks a runner for manual inspection:
+    ///  - the orchestrator will not delete the VM while the hold is set,
+    ///  - the runner is registered as an SSH target in Warpgate and the configured
+    ///    access role is granted access to it.
+    /// The hold is only released by explicitly deleting the runner.
+    /// </summary>
+    [Route("runners/{runnerId}/inspect")]
+    [HttpPost]
+    [Authorize(Policy = TeleportAuth.CanMutatePolicy)]
+    public async Task<IResult> InspectRunner(int runnerId)
+    {
+        await using var db = new ActionsRunnerContext();
+        var runner = await db.Runners.Include(x => x.Lifecycle).FirstOrDefaultAsync(x => x.RunnerId == runnerId);
+        if (runner == null)
+            return Results.NotFound(new { message = $"Runner {runnerId} not found" });
+
+        if (runner.IsHeld)
+            return Results.Json(new
+            {
+                message = $"Runner {runnerId} ({runner.Hostname}) is already held for inspection.",
+                alreadyHeld = true
+            });
+
+        if (runner.LastState is RunnerStatus.DeletionQueued or RunnerStatus.Deleted)
+            return Results.BadRequest(new { message = $"Runner {runnerId} is already {runner.LastState}." });
+
+        if (runner.CloudServerId == 0)
+            return Results.BadRequest(new { message = $"Runner {runnerId} has no cloud VM yet - it cannot be held." });
+
+        if (string.IsNullOrWhiteSpace(runner.IPv4) || runner.IPv4 is "0.0.0.0" or "0.0.0.0/0")
+            return Results.BadRequest(new { message = $"Runner {runnerId} ({runner.Hostname}) has no reachable IP address yet." });
+
+        string who = TeleportAuth.GetUsername(User) ?? "unknown";
+        var wgConfig = Program.Config.Warpgate;
+
+        // Register in Warpgate BEFORE setting the hold: if registration fails we do not
+        // want a held runner the operator cannot actually get into.
+        string warpgateEvent = null;
+        if (wgConfig?.Enabled == true)
+        {
+            try
+            {
+                var (_, created) = await Warpgate.RegisterInspectionTargetAsync(runner.Hostname, runner.IPv4);
+                warpgateEvent = created
+                    ? $" Registered in Warpgate as target '{runner.Hostname}' (role '{wgConfig.AccessRole}')."
+                    : $" Warpgate target '{runner.Hostname}' reused, role '{wgConfig.AccessRole}' granted.";
+            }
+            catch (WarpgateException ex)
+            {
+                _logger.LogError("Warpgate registration for runner {Runner} failed: {Error}", runner.Hostname, ex.Message);
+                return Results.Json(
+                    new { message = $"Runner was NOT held - Warpgate registration failed: {ex.Message}" },
+                    statusCode: StatusCodes.Status502BadGateway);
+            }
+        }
+
+        runner.IsHeld = true;
+        runner.Lifecycle.Add(new RunnerLifecycle
+        {
+            EventTimeUtc = DateTime.UtcNow,
+            Status = RunnerStatus.Held,
+            Event = $"Held for inspection by {who} via dashboard API.{warpgateEvent ?? " Warpgate is disabled."}"
+        });
+        await db.SaveChangesAsync();
+
+        _logger.LogWarning($"Runner {runnerId} ({runner.Hostname}) held for inspection by {who}");
+
+        object warpgateInfo = wgConfig?.Enabled == true
+            ? new { registered = true, targetName = runner.Hostname, role = wgConfig.AccessRole }
+            : new { registered = false, targetName = (string)null, role = (string)null };
+
+        return Results.Json(new
+        {
+            message = $"Runner {runnerId} ({runner.Hostname}) is now held for inspection. It will not be deleted until you explicitly delete it.{warpgateEvent ?? " Warpgate is disabled."}",
+            warpgate = warpgateInfo,
+        });
     }
 
     public record CreateRunnerRequest(string Owner, string Size, string? Profile, string? Repository);
@@ -509,10 +640,12 @@ public class ApiController : Controller
 
         // Runners stuck in CreationQueued past the cutoff with no pending create task and
         // no active tracking entry are leftovers of failed/cleared creation attempts.
+        // Held runners are never touched here.
         var abandoned = await db.Runners
             .Include(r => r.Lifecycle)
             .Where(r =>
-                db.RunnerLifecycles.Where(rl => rl.RunnerId == r.RunnerId)
+                !r.IsHeld
+                && db.RunnerLifecycles.Where(rl => rl.RunnerId == r.RunnerId)
                     .OrderByDescending(rl => rl.EventTimeUtc).First().Status == RunnerStatus.CreationQueued
                 && db.RunnerLifecycles.Where(rl => rl.RunnerId == r.RunnerId)
                     .OrderByDescending(rl => rl.EventTimeUtc).First().EventTimeUtc < cutoff
@@ -622,10 +755,11 @@ public class ApiController : Controller
 
         // Find all runners that are not in Processing state using the lifecycle table.
         // Exclude runners with no cloud server (CloudServerId == 0) — nothing to delete on the CSP.
+        // Exclude runners held for inspection — those stay until deleted explicitly.
         var excludedStatuses = new[] { RunnerStatus.Processing, RunnerStatus.DeletionQueued, RunnerStatus.Deleted };
         var query = db.Runners
             .AsNoTracking()
-            .Where(r => r.CloudServerId != 0);
+            .Where(r => r.CloudServerId != 0 && !r.IsHeld);
 
         if (!string.IsNullOrEmpty(cloud))
         {

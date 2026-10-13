@@ -612,8 +612,15 @@ public class Program
                     logger.LogInformation($"Re-creating runner of type [{runner.Size}, {runner.Arch}] for {runner.Job.Repository}");
                     runnerQueue.CreateTasks.Enqueue(runnerSpec);
 
-                    // Queue deletion of the failed runner
-                    runnerQueue.DeleteTasks.Enqueue(new DeleteRunnerTask { ServerId = runner.CloudServerId });
+                    // Queue deletion of the failed runner - unless it is held for inspection
+                    if (runner.IsHeld)
+                    {
+                        logger.LogWarning($"Runner {runner.Hostname} failed provisioning but is held for inspection - not queueing deletion");
+                    }
+                    else
+                    {
+                        runnerQueue.DeleteTasks.Enqueue(new DeleteRunnerTask { ServerId = runner.CloudServerId });
+                    }
                     await db.SaveChangesAsync();
                 }
 
@@ -744,7 +751,18 @@ public class Program
         }
         
         // record event in DB
-        if (jobRunner.Lifecycle.Any(x => x.Status == RunnerStatus.DeletionQueued))
+        if (jobRunner.IsHeld)
+        {
+            // Runner is held for manual inspection: the job is done, but the VM is kept
+            // for the operator to investigate. It will only go away on explicit deletion.
+            jobRunner.Lifecycle.Add(new()
+            {
+                Status = RunnerStatus.Provisioned,
+                EventTimeUtc = DateTime.UtcNow,
+                Event = $"Workflow Job {jobId} in repo {repoName} has completed. Runner is held for inspection - keeping VM."
+            });
+        }
+        else if (jobRunner.Lifecycle.Any(x => x.Status == RunnerStatus.DeletionQueued))
         {
             jobRunner.Lifecycle.Add(new()
             {

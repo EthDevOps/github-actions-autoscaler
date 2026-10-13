@@ -97,6 +97,47 @@ public class AutoScalerConfiguration
     /// mutating endpoints fall back to the API key only.
     /// </summary>
     public TeleportAuthConfiguration TeleportAuth { get; set; } = new();
+
+    /// <summary>
+    /// Warpgate integration for the "hold for inspection" feature. When enabled, holding a
+    /// runner registers it as an SSH target in Warpgate and grants the configured access
+    /// role access to it. When disabled, holding a runner only protects it from deletion.
+    /// </summary>
+    public WarpgateConfiguration Warpgate { get; set; } = new();
+}
+
+public class WarpgateConfiguration
+{
+    public bool Enabled { get; set; } = false;
+
+    /// <summary>Base URL of the Warpgate instance, e.g. https://eu.gate.ethdevops.io</summary>
+    [JsonConverter(typeof(EnvironmentAwareJsonConverter<string>))]
+    public string BaseUrl { get; set; } = "https://eu.gate.ethdevops.io";
+
+    /// <summary>Admin API token, sent as the X-Warpgate-Token header.</summary>
+    [JsonConverter(typeof(EnvironmentAwareJsonConverter<string>))]
+    public string ApiKey { get; set; }
+
+    /// <summary>
+    /// Name of the Warpgate role that gets access to held runners. The role must already
+    /// exist in Warpgate; members of that role can then reach the runner through the gateway.
+    /// </summary>
+    public string AccessRole { get; set; }
+
+    /// <summary>Username on the runner VM that Warpgate connects as.</summary>
+    public string SshUsername { get; set; } = "devops";
+
+    /// <summary>SSH port on the runner VM.</summary>
+    public int SshTargetPort { get; set; } = 22;
+
+    /// <summary>
+    /// SSH address of the Warpgate gateway for client connections
+    /// (ssh &lt;warpgate-user&gt;:&lt;target&gt;@&lt;GatewaySshHost&gt; -p &lt;GatewaySshPort&gt;).
+    /// Exposed to the dashboard so operators can copy the connect command.
+    /// </summary>
+    public string GatewaySshHost { get; set; } = "eu.gate.ethdevops.io";
+
+    public int GatewaySshPort { get; set; } = 22;
 }
 
 public class TeleportAuthConfiguration

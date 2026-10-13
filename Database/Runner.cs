@@ -66,4 +66,11 @@ public class Runner
     public bool UsePrivateNetwork { get; set; }
     public string ProvisionId { get; set; }
     public string ProvisionPayload { get; set; }
+
+    /// <summary>
+    /// True while the runner is held for manual inspection. While set, no automatic cleanup
+    /// (offline, completed-job, dangling, CSP cleanup, stuck-runner, 30-day DB purge) may
+    /// delete the VM. Cleared when the operator explicitly deletes the runner.
+    /// </summary>
+    public bool IsHeld { get; set; }
 }

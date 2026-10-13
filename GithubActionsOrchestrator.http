@@ -4,3 +4,11 @@ GET {{GithubActionsOrchestrator_HostAddress}}/weatherforecast/
 Accept: application/json
 
 ###
+
+# Hold a runner for inspection: protects it from orchestrator deletion and
+# registers it in Warpgate (when Warpgate is enabled in the config).
+# DELETE the same runner to release the hold and destroy the VM.
+POST {{GithubActionsOrchestrator_HostAddress}}/api/runners/42/inspect
+X-API-KEY: dev-api-key
+
+###

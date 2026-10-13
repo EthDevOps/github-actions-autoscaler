@@ -239,12 +239,18 @@ public class PoolManager : BackgroundService
 
         var cutoffTime = DateTime.UtcNow - TimeSpan.FromDays(30);
 
-        // Remove old runners - find runners where their earliest lifecycle event is older than 30 days
-        var oldRunnerIds = await db.RunnerLifecycles
-            .GroupBy(rl => rl.RunnerId)
-            .Select(g => new { RunnerId = g.Key, LatestEvent = g.Max(rl => rl.EventTimeUtc) })
-            .Where(r => r.LatestEvent < cutoffTime)
-            .Select(r => r.RunnerId)
+        // Remove old runners - find runners where their earliest lifecycle event is older than 30 days.
+        // Runners held for inspection are exempt - the operator decides when they go.
+        var oldRunnerIds = await db.Runners
+            .Where(r => !r.IsHeld)
+            .Join(db.RunnerLifecycles,
+                r => r.RunnerId,
+                rl => rl.RunnerId,
+                (r, rl) => new { r.RunnerId, rl.EventTimeUtc })
+            .GroupBy(x => x.RunnerId)
+            .Select(g => new { RunnerId = g.Key, LatestEvent = g.Max(x => x.EventTimeUtc) })
+            .Where(x => x.LatestEvent < cutoffTime)
+            .Select(x => x.RunnerId)
             .ToListAsync();
 
         if (oldRunnerIds.Count > 0)
@@ -305,7 +311,8 @@ public class PoolManager : BackgroundService
         var abandoned = await db.Runners
             .AsNoTracking()
             .Where(r =>
-                db.RunnerLifecycles.Where(rl => rl.RunnerId == r.RunnerId)
+                !r.IsHeld
+                && db.RunnerLifecycles.Where(rl => rl.RunnerId == r.RunnerId)
                     .OrderByDescending(rl => rl.EventTimeUtc).First().Status == RunnerStatus.CreationQueued
                 && db.RunnerLifecycles.Where(rl => rl.RunnerId == r.RunnerId)
                     .OrderByDescending(rl => rl.EventTimeUtc).First().EventTimeUtc < cutoffTime
@@ -356,10 +363,12 @@ public class PoolManager : BackgroundService
         await using var db = new ActionsRunnerContext();
         var cutoffTime = DateTime.UtcNow - TimeSpan.FromMinutes(10);
         
-        // Query stuck runners by joining with lifecycle table
+        // Query stuck runners by joining with lifecycle table.
+        // Held runners are never killed here - the operator wants the VM kept.
         var stuckRunners = await db.Runners
             .AsNoTracking()
-            .Where(r => db.RunnerLifecycles
+            .Where(r => !r.IsHeld &&
+                db.RunnerLifecycles
                 .Where(rl => rl.RunnerId == r.RunnerId && rl.Status == RunnerStatus.Created)
                 .Any(rl => rl.EventTimeUtc < cutoffTime) &&
                 db.RunnerLifecycles
@@ -967,6 +976,13 @@ public class PoolManager : BackgroundService
                     continue;
                 }
 
+                // Protection: Never delete a runner held for inspection
+                if (runner.IsHeld)
+                {
+                    _logger.LogDebug($"[OFFLINE] Runner {ghRunner.Name} is held for inspection - keeping");
+                    continue;
+                }
+
                 // Protection: Must be at least 10 minutes old
                 var runnerAge = DateTime.UtcNow - await GetRunnerCreationTime(runner, null, db);
                 if (runnerAge < TimeSpan.FromMinutes(10))
@@ -1037,6 +1053,13 @@ public class PoolManager : BackgroundService
                     continue;
                 }
 
+                // Protection: Never delete a runner held for inspection
+                if (runner.IsHeld)
+                {
+                    _logger.LogDebug($"[COMPLETED JOB] Runner {ghRunner.Name} is held for inspection - keeping");
+                    continue;
+                }
+
                 // Check if job is completed
                 if (!IsJobComplete(runner))
                 {
@@ -1103,6 +1126,13 @@ public class PoolManager : BackgroundService
 
                 if (runner == null)
                 {
+                    continue;
+                }
+
+                // Protection: Never delete a runner held for inspection
+                if (runner.IsHeld)
+                {
+                    _logger.LogDebug($"[DANGLING] Runner {ghRunner.Name} is held for inspection - keeping");
                     continue;
                 }
 
@@ -1203,6 +1233,13 @@ public class PoolManager : BackgroundService
                     if (runner == null)
                     {
                         _logger.LogWarning($"CSP server {cspServer.Name} not found in database - skipping");
+                        continue;
+                    }
+
+                    // Protection: Never delete a runner held for inspection
+                    if (runner.IsHeld)
+                    {
+                        _logger.LogDebug($"[CSP CLEANUP] Runner {cspServer.Name} is held for inspection - keeping");
                         continue;
                     }
 
@@ -1383,6 +1420,15 @@ public class PoolManager : BackgroundService
 
         activity?.SetTag("runner.hostname", runner.Hostname);
         activity?.SetTag("runner.cloud", runner.Cloud);
+
+        // Final safety net: a runner held for inspection is never deleted, even if a
+        // deletion task was queued before the hold was set. (The operator-initiated
+        // delete releases the hold before queueing, so it is unaffected.)
+        if (runner.IsHeld)
+        {
+            _logger.LogWarning($"DeleteRunner: Runner {runner.RunnerId} ({runner.Hostname}) is held for inspection - skipping queued deletion");
+            return true;
+        }
 
         try
         {

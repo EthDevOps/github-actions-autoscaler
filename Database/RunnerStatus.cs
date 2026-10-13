@@ -12,5 +12,6 @@ public enum RunnerStatus
     Failure = 7,
     VanishedOnCloud = 8,
     Cleanup = 9,
-    Cancelled = 10
+    Cancelled = 10,
+    Held = 11
 }
