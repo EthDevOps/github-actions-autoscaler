@@ -16,15 +16,24 @@ public class WarpgateException : Exception
 }
 
 /// <summary>
-/// Minimal client for the Warpgate admin API (v1, targets + roles model).
+/// Minimal client for the Warpgate admin API (targets + roles model).
 /// Used by the "hold for inspection" feature to register a runner VM as an SSH
 /// target in Warpgate and grant the configured access role access to it.
+///
+/// The admin API is mounted at /@warpgate/admin/api (alias: /_warpgate/admin/api)
+/// on the Warpgate base URL - there is no /api/v1 prefix (verified against the
+/// warpgate-protocol-http route mounting and the Terraform provider). Routes:
+/// GET/POST /targets, GET/PUT/DELETE /targets/{id}, GET /roles?search=,
+/// POST /targets/{id}/roles/{roleId}.
 ///
 /// Auth: admin API token sent as the X-Warpgate-Token header (stable across
 /// Warpgate v0.21+; the older "apps"/"groups" API is not supported).
 /// </summary>
 public class WarpgateClient
 {
+    /// <summary>Mount point of the Warpgate admin API relative to the base URL.</summary>
+    private const string AdminApi = "/@warpgate/admin/api";
+
     private readonly WarpgateConfiguration _config;
     private readonly HttpClient _http;
     private readonly ILogger<WarpgateClient> _logger;
@@ -113,7 +122,7 @@ public class WarpgateClient
 
     private async Task<string?> FindRoleIdByNameAsync(string name)
     {
-        JsonElement? roles = await GetJsonArrayAsync($"/api/v1/roles?search={Uri.EscapeDataString(name)}");
+        JsonElement? roles = await GetJsonArrayAsync($"{AdminApi}/roles?search={Uri.EscapeDataString(name)}");
         if (roles == null)
             return null;
 
@@ -130,7 +139,7 @@ public class WarpgateClient
 
     private async Task<string?> FindTargetIdByNameAsync(string name)
     {
-        JsonElement? targets = await GetJsonArrayAsync($"/api/v1/targets?search={Uri.EscapeDataString(name)}");
+        JsonElement? targets = await GetJsonArrayAsync($"{AdminApi}/targets?search={Uri.EscapeDataString(name)}");
         if (targets == null)
             return null;
 
@@ -147,14 +156,15 @@ public class WarpgateClient
 
     private async Task<(string Host, JsonElement Raw)?> GetTargetAsync(string targetId)
     {
-        HttpResponseMessage response = await _http.GetAsync($"/api/v1/targets/{targetId}");
+        string path = $"{AdminApi}/targets/{targetId}";
+        HttpResponseMessage response = await _http.GetAsync(path);
         if (response.StatusCode == HttpStatusCode.NotFound)
         {
             response.Dispose();
             return null;
         }
 
-        JsonElement el = await ReadJsonAsync(() => Task.FromResult(response));
+        JsonElement el = await ReadJsonAsync($"GET {path}", () => Task.FromResult(response));
         return (ExtractHost(el), el);
     }
 
@@ -171,19 +181,21 @@ public class WarpgateClient
 
     private async Task<string> CreateSshTargetAsync(string name, string host, string description)
     {
-        HttpResponseMessage response = await _http.PostAsJsonAsync("/api/v1/targets", BuildTargetBody(name, host, description));
+        string path = $"{AdminApi}/targets";
+        HttpResponseMessage response = await _http.PostAsJsonAsync(path, BuildTargetBody(name, host, description));
         string body = await response.Content.ReadAsStringAsync();
         if (!response.IsSuccessStatusCode)
             throw new WarpgateException($"Creating Warpgate target '{name}' failed: HTTP {(int)response.StatusCode} {body}");
 
-        JsonElement target = JsonDocument.Parse(body).RootElement;
+        JsonElement target = ParseJson(body, $"POST {path}");
         return target.GetProperty("id").GetString()
             ?? throw new WarpgateException($"Warpgate target creation for '{name}' returned no id.");
     }
 
     private async Task UpdateSshTargetAsync(string targetId, string name, string host, string description)
     {
-        HttpResponseMessage response = await _http.PutAsJsonAsync($"/api/v1/targets/{targetId}", BuildTargetBody(name, host, description));
+        string path = $"{AdminApi}/targets/{targetId}";
+        HttpResponseMessage response = await _http.PutAsJsonAsync(path, BuildTargetBody(name, host, description));
         string body = await response.Content.ReadAsStringAsync();
         if (!response.IsSuccessStatusCode)
             throw new WarpgateException($"Updating Warpgate target '{name}' failed: HTTP {(int)response.StatusCode} {body}");
@@ -218,7 +230,8 @@ public class WarpgateClient
     {
         try
         {
-            HttpResponseMessage response = await _http.PostAsync($"/api/v1/targets/{targetId}/roles/{roleId}", content: null);
+            string path = $"{AdminApi}/targets/{targetId}/roles/{roleId}";
+            HttpResponseMessage response = await _http.PostAsync(path, content: null);
             if (response.StatusCode == HttpStatusCode.Created || response.StatusCode == HttpStatusCode.Conflict)
             {
                 if (response.StatusCode == HttpStatusCode.Conflict)
@@ -241,7 +254,8 @@ public class WarpgateClient
     {
         try
         {
-            HttpResponseMessage response = await _http.DeleteAsync($"/api/v1/targets/{targetId}");
+            string path = $"{AdminApi}/targets/{targetId}";
+            HttpResponseMessage response = await _http.DeleteAsync(path);
             if (response.StatusCode == HttpStatusCode.NotFound)
                 return false;
             if (response.StatusCode == HttpStatusCode.NoContent)
@@ -269,7 +283,7 @@ public class WarpgateClient
                 throw new WarpgateException($"Warpgate GET {path} failed: HTTP {(int)response.StatusCode} {body}");
             }
 
-            JsonElement el = await ReadJsonAsync(() => Task.FromResult(response));
+            JsonElement el = await ReadJsonAsync($"GET {path}", () => Task.FromResult(response));
             return el.ValueKind == JsonValueKind.Array ? el : null;
         }
         catch (HttpRequestException ex)
@@ -278,10 +292,29 @@ public class WarpgateClient
         }
     }
 
-    private static async Task<JsonElement> ReadJsonAsync(Func<Task<HttpResponseMessage>> requestFactory)
+    private static async Task<JsonElement> ReadJsonAsync(string context, Func<Task<HttpResponseMessage>> requestFactory)
     {
         using HttpResponseMessage response = await requestFactory();
         string text = await response.Content.ReadAsStringAsync();
+        return ParseJson(text, context);
+    }
+
+    /// <summary>
+    /// Parses a Warpgate response body as JSON. Warpgate's SPA catchall serves
+    /// index.html with HTTP 200 for unknown paths, so a body that doesn't start
+    /// with '{' or '[' means the request didn't hit the admin API - surface a
+    /// descriptive WarpgateException instead of an unhandled JsonReaderException.
+    /// </summary>
+    private static JsonElement ParseJson(string text, string context)
+    {
+        string trimmed = text.TrimStart();
+        if (trimmed.Length == 0 || (trimmed[0] != '{' && trimmed[0] != '['))
+        {
+            string snippet = trimmed.Length > 120 ? trimmed.Substring(0, 120) + "…" : trimmed;
+            throw new WarpgateException(
+                $"Warpgate returned a non-JSON response to {context} " +
+                $"(the admin API path may be missing or changed). Response started with: \"{snippet}\"");
+        }
         return JsonDocument.Parse(text).RootElement.Clone();
     }
 }

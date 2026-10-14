@@ -23,6 +23,16 @@ public class WarpgateClientTests : IDisposable
 
     private const string RoleId = "11111111-1111-1111-1111-111111111111";
 
+    // The admin API is mounted at /@warpgate/admin/api on the Warpgate base URL.
+    private const string Api = "/@warpgate/admin/api";
+
+    /// <summary>
+    /// When true, the mock serves an HTML page with HTTP 200 for role lookups,
+    /// mimicking Warpgate's SPA catchall for unknown paths (the production
+    /// failure mode that motivated the client's non-JSON guard).
+    /// </summary>
+    private bool _returnHtmlForRoles;
+
     public WarpgateClientTests()
     {
         // Find a free port and start the mock.
@@ -89,7 +99,7 @@ public class WarpgateClientTests : IDisposable
         lock (_lock)
         {
             Assert.Contains(_requests, r => r.Method == "POST"
-                && r.Path == $"/api/v1/targets/{targetId}/roles/{RoleId}");
+                && r.Path == $"{Api}/targets/{targetId}/roles/{RoleId}");
         }
     }
 
@@ -122,7 +132,7 @@ public class WarpgateClientTests : IDisposable
         {
             var t = _targets.Values.First(x => (string)x["name"] == "ghr-foo");
             Assert.Equal("10.0.0.99", (string)((Dictionary<string, object>)t["options"])["host"]);
-            Assert.Contains(_requests, r => r.Method == "PUT" && r.Path == $"/api/v1/targets/{first.TargetId}");
+            Assert.Contains(_requests, r => r.Method == "PUT" && r.Path == $"{Api}/targets/{first.TargetId}");
         }
     }
 
@@ -143,6 +153,21 @@ public class WarpgateClientTests : IDisposable
 
         await Assert.ThrowsAsync<WarpgateException>(
             () => client.RegisterInspectionTargetAsync("ghr-foo", "10.0.0.5"));
+    }
+
+    [Fact]
+    public async Task Register_Throws_WhenServerReturnsHtmlInsteadOfJson()
+    {
+        // Warpgate's SPA catchall answers unknown paths with index.html + HTTP 200.
+        // The client must turn that into a descriptive WarpgateException (which
+        // InspectRunner surfaces as a clean 502) instead of a JsonReaderException.
+        _returnHtmlForRoles = true;
+        var client = NewClient();
+
+        WarpgateException ex = await Assert.ThrowsAsync<WarpgateException>(
+            () => client.RegisterInspectionTargetAsync("ghr-foo", "10.0.0.5"));
+
+        Assert.Contains("non-JSON", ex.Message);
     }
 
     [Fact]
@@ -215,29 +240,40 @@ public class WarpgateClientTests : IDisposable
 
         int code;
         string respJson;
-        if (req.HttpMethod == "GET" && path.StartsWith("/api/v1/roles"))
+        string contentType = "application/json";
+        if (req.HttpMethod == "GET" && path.StartsWith(Api + "/roles"))
         {
-            // Roles: only "inspectors" exists.
-            respJson = "[{\"id\":\"" + RoleId + "\",\"name\":\"inspectors\",\"description\":\"ops\",\"is_default\":false}]";
-            code = 200;
+            if (_returnHtmlForRoles)
+            {
+                // Mimic Warpgate's SPA catchall: unknown paths get index.html + 200.
+                respJson = "<!doctype html><html><head><title>Warpgate</title></head><body>app</body></html>";
+                contentType = "text/html";
+                code = 200;
+            }
+            else
+            {
+                // Roles: only "inspectors" exists.
+                respJson = "[{\"id\":\"" + RoleId + "\",\"name\":\"inspectors\",\"description\":\"ops\",\"is_default\":false}]";
+                code = 200;
+            }
         }
-        else if (req.HttpMethod == "GET" && path == "/api/v1/targets")
+        else if (req.HttpMethod == "GET" && path == Api + "/targets")
         {
             // Targets list (search).
             respJson = ListTargetsJson();
             code = 200;
         }
-        else if (req.HttpMethod == "GET" && path.StartsWith("/api/v1/targets/"))
+        else if (req.HttpMethod == "GET" && path.StartsWith(Api + "/targets/"))
         {
             // Single target.
             (code, respJson) = GetTarget(path);
         }
-        else if (req.HttpMethod == "POST" && path == "/api/v1/targets")
+        else if (req.HttpMethod == "POST" && path == Api + "/targets")
         {
             // Create target.
             (code, respJson) = CreateTarget(body);
         }
-        else if (req.HttpMethod == "PUT" && path.StartsWith("/api/v1/targets/"))
+        else if (req.HttpMethod == "PUT" && path.StartsWith(Api + "/targets/"))
         {
             // Update target.
             (code, respJson) = UpdateTarget(path, body);
@@ -247,7 +283,7 @@ public class WarpgateClientTests : IDisposable
             // Grant role.
             (code, respJson) = GrantRole(path);
         }
-        else if (req.HttpMethod == "DELETE" && path.StartsWith("/api/v1/targets/"))
+        else if (req.HttpMethod == "DELETE" && path.StartsWith(Api + "/targets/"))
         {
             // Delete target.
             (code, respJson) = DeleteTarget(path);
@@ -259,7 +295,7 @@ public class WarpgateClientTests : IDisposable
         }
 
         ctx.Response.StatusCode = code;
-        ctx.Response.ContentType = "application/json";
+        ctx.Response.ContentType = contentType;
         byte[] data = Encoding.UTF8.GetBytes(respJson);
         ctx.Response.ContentLength64 = data.Length;
         ctx.Response.OutputStream.Write(data, 0, data.Length);
@@ -278,7 +314,7 @@ public class WarpgateClientTests : IDisposable
 
     private (int, string) GetTarget(string path)
     {
-        string id = path.Substring("/api/v1/targets/".Length);
+        string id = path.Substring((Api + "/targets/").Length);
         lock (_lock)
         {
             if (_targets.TryGetValue(id, out var t)) return (200, TargetToJson(t));
@@ -317,7 +353,7 @@ public class WarpgateClientTests : IDisposable
 
     private (int, string) UpdateTarget(string path, string body)
     {
-        string id = path.Substring("/api/v1/targets/".Length);
+        string id = path.Substring((Api + "/targets/").Length);
         lock (_lock)
         {
             if (!_targets.TryGetValue(id, out var t)) return (404, "\"not found\"");
@@ -329,10 +365,10 @@ public class WarpgateClientTests : IDisposable
 
     private (int, string) GrantRole(string path)
     {
-        // /api/v1/targets/{id}/roles/{roleId}
+        // /@warpgate/admin/api/targets/{id}/roles/{roleId}
         var segs = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        // segs: api, v1, targets, {id}, roles, {roleId}
-        string targetId = segs[3];
+        // segs: @warpgate, admin, api, targets, {id}, roles, {roleId}
+        string targetId = segs[4];
         lock (_lock)
         {
             if (!_targets.ContainsKey(targetId)) return (404, "\"not found\"");
@@ -344,7 +380,7 @@ public class WarpgateClientTests : IDisposable
 
     private (int, string) DeleteTarget(string path)
     {
-        string id = path.Substring("/api/v1/targets/".Length);
+        string id = path.Substring((Api + "/targets/").Length);
         lock (_lock)
         {
             if (_targets.Remove(id)) return (204, "");
