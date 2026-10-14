@@ -155,12 +155,24 @@ public class Program
              options.JsonSerializerOptions.ReferenceHandler = ReferenceHandler.IgnoreCycles;
          });
 
-        // Teleport JWT verification + authorization for mutating dashboard endpoints.
-        builder.AddTeleportAuth(Config.TeleportAuth);
-        if (Config.TeleportAuth.Enabled)
-            Log.Information("Teleport auth enabled: mutating endpoints require an authorized JWT (JWKS: {Jwks})", Config.TeleportAuth.JwksUrl);
+        // Identity + authorization for mutating dashboard endpoints. The provider is chosen
+        // by config: Warpgate wins if both are enabled. When the active provider is
+        // disabled, mutating endpoints are gated by the API key only.
+        if (Config.WarpgateAuth.Enabled)
+        {
+            if (Config.TeleportAuth.Enabled)
+                Log.Warning("Both WarpgateAuth and TeleportAuth are enabled - Warpgate takes precedence.");
+            builder.AddWarpgateAuth(Config.WarpgateAuth);
+            Log.Information("Warpgate auth enabled: mutating endpoints require an authorized user from the {Header} header", Config.WarpgateAuth.UsernameHeader);
+        }
         else
-            Log.Warning("Teleport auth is DISABLED: mutating endpoints are gated by the API key only.");
+        {
+            builder.AddTeleportAuth(Config.TeleportAuth);
+            if (Config.TeleportAuth.Enabled)
+                Log.Information("Teleport auth enabled: mutating endpoints require an authorized JWT (JWKS: {Jwks})", Config.TeleportAuth.JwksUrl);
+            else
+                Log.Warning("Teleport auth is DISABLED: mutating endpoints are gated by the API key only.");
+        }
 
         builder.Services.AddSingleton<ICloudController, HetznerCloudController>(svc =>
         {

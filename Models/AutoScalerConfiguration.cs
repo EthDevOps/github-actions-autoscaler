@@ -104,6 +104,14 @@ public class AutoScalerConfiguration
     /// role access to it. When disabled, holding a runner only protects it from deletion.
     /// </summary>
     public WarpgateConfiguration Warpgate { get; set; } = new();
+
+    /// <summary>
+    /// Warpgate-based authorization for mutating dashboard API calls. When enabled, the
+    /// caller's identity is taken from the headers Warpgate injects on requests it proxies
+    /// to the viewer (X-Warpgate-Username). Takes precedence over <see cref="TeleportAuth"/>
+    /// when both are enabled.
+    /// </summary>
+    public WarpgateAuthConfiguration WarpgateAuth { get; set; } = new();
 }
 
 public class WarpgateConfiguration
@@ -165,4 +173,33 @@ public class TeleportAuthConfiguration
 
     /// <summary>Teleport usernames allowed to run mutating actions. Empty = user membership not required.</summary>
     public List<string> AuthorizedUsers { get; set; } = new();
+}
+
+public class WarpgateAuthConfiguration
+{
+    /// <summary>Enable Warpgate-identity authorization on mutating endpoints.</summary>
+    public bool Enabled { get; set; } = false;
+
+    /// <summary>
+    /// Header Warpgate sets with the authenticated user's name on every proxied request.
+    /// </summary>
+    public string UsernameHeader { get; set; } = "X-Warpgate-Username";
+
+    /// <summary>
+    /// Header Warpgate sets with the session type: "user" (logged-in SSO session) or
+    /// "ticket" (one-time access link).
+    /// </summary>
+    public string AuthTypeHeader { get; set; } = "X-Warpgate-Authentication-Types";
+
+    /// <summary>
+    /// Warpgate usernames allowed to run mutating actions. Empty = any Warpgate user may
+    /// mutate. Warpgate does not forward roles, so authorization is user-based.
+    /// </summary>
+    public List<string> AuthorizedUsers { get; set; } = new();
+
+    /// <summary>
+    /// Require a "user" session for mutating actions. One-time Warpgate ticket URLs act as
+    /// the ticket creator, so they are rejected for mutations by default (read-only still works).
+    /// </summary>
+    public bool RequireUserAuthType { get; set; } = true;
 }

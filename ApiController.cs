@@ -894,17 +894,36 @@ public class ApiController : Controller
         return Encoding.UTF8.GetString(Convert.FromBase64String(s));
     }
 
-    // Identity of the caller (from the verified Teleport JWT, if present) plus whether
-    // they may run mutating actions. The frontend uses this to gate its action buttons.
+    // Identity of the caller (from the active auth provider: Warpgate headers or verified
+    // Teleport JWT, if present) plus whether they may run mutating actions. The frontend
+    // uses this to gate its action buttons.
     [Route("me")]
     [HttpGet]
     public IResult Me()
     {
+        var wCfg = Program.Config.WarpgateAuth;
+        if (wCfg.Enabled)
+        {
+            bool wAuthenticated = User?.Identity?.IsAuthenticated == true;
+            return Results.Json(new
+            {
+                authEnabled = true,
+                provider = "warpgate",
+                authenticated = wAuthenticated,
+                user = wAuthenticated ? WarpgateAuth.GetUsername(User) : null,
+                authType = wAuthenticated ? WarpgateAuth.GetAuthType(User) : null,
+                // Warpgate does not forward roles.
+                roles = Array.Empty<string>(),
+                canMutate = wAuthenticated && WarpgateAuth.IsAuthorizedToMutate(User, wCfg),
+            });
+        }
+
         var cfg = Program.Config.TeleportAuth;
         bool authenticated = User?.Identity?.IsAuthenticated == true;
         return Results.Json(new
         {
             authEnabled = cfg.Enabled,
+            provider = "teleport",
             authenticated,
             user = authenticated ? TeleportAuth.GetUsername(User) : null,
             roles = authenticated ? TeleportAuth.GetRoles(User).Distinct().ToArray() : Array.Empty<string>(),
