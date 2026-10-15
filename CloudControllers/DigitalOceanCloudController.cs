@@ -217,14 +217,8 @@ public class DigitalOceanCloudController : BaseCloudController, ICloudController
         var droplet = dropletJson.Value.GetProperty("droplet");
         long dropletId = droplet.GetProperty("id").GetInt64();
 
-        // The droplet may not have an IP immediately — read it from the create response,
-        // or poll the droplet resource until the public IP is assigned
-        string ipv4 = string.Empty;
-        if (!TryGetPublicIpv4(droplet, out ipv4))
-        {
-            _logger.LogDebug($"DO droplet {name} ({dropletId}) has no public IP in the create response, waiting for it...");
-            ipv4 = await WaitForPublicIp(dropletId, name);
-        }
+        // The public IP is usually not assigned yet; it is filled in when the runner reports provisioned
+        TryGetPublicIpv4(droplet, out string ipv4);
 
         return new Machine
         {
@@ -256,33 +250,6 @@ public class DigitalOceanCloudController : BaseCloudController, ICloudController
             }
         }
         return false;
-    }
-
-    private async Task<string> WaitForPublicIp(long dropletId, string name, int timeoutSeconds = 60, int pollSeconds = 2)
-    {
-        var endTime = DateTime.UtcNow.AddSeconds(timeoutSeconds);
-
-        while (DateTime.UtcNow < endTime)
-        {
-            try
-            {
-                string ip = await GetRunnerIpAddress(dropletId);
-                if (!string.IsNullOrEmpty(ip))
-                {
-                    _logger.LogInformation($"DO droplet {name} ({dropletId}) has public IP {ip}");
-                    return ip;
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogDebug($"Failed to get IP for DO droplet {dropletId}: {ex.Message}");
-            }
-
-            await Task.Delay(TimeSpan.FromSeconds(pollSeconds));
-        }
-
-        _logger.LogWarning($"Timed out after {timeoutSeconds}s waiting for public IP of DO droplet {name} ({dropletId})");
-        return string.Empty;
     }
 
     private string MapOsImage(string profileOsImageName)

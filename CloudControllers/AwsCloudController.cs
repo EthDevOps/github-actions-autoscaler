@@ -227,8 +227,8 @@ public class AwsCloudController : BaseCloudController, ICloudController
             }
         }
 
-        // The public IP is only assigned once the instance leaves "pending" - poll until it shows up
-        string publicIp = await WaitForPublicIp(instance.InstanceId, name);
+        // The public IP is only assigned once the instance leaves "pending"; it is filled in when the runner reports provisioned
+        string publicIp = instance.PublicIpAddress ?? string.Empty;
 
         return new Machine
         {
@@ -242,44 +242,6 @@ public class AwsCloudController : BaseCloudController, ICloudController
             Profile = profileName,
             IsCustom = isCustom
         };
-    }
-
-    private async Task<Instance?> DescribeInstance(string instanceId)
-    {
-        var request = new DescribeInstancesRequest
-        {
-            InstanceIds = [instanceId]
-        };
-
-        var response = await _client.DescribeInstancesAsync(request);
-        return response.Reservations?.FirstOrDefault()?.Instances?.FirstOrDefault();
-    }
-
-    private async Task<string> WaitForPublicIp(string instanceId, string name, int timeoutSeconds = 90, int pollSeconds = 2)
-    {
-        var endTime = DateTime.UtcNow.AddSeconds(timeoutSeconds);
-
-        while (DateTime.UtcNow < endTime)
-        {
-            try
-            {
-                Instance inst = await DescribeInstance(instanceId);
-                if (inst != null && !string.IsNullOrEmpty(inst.PublicIpAddress))
-                {
-                    _logger.LogInformation($"AWS instance {name} ({instanceId}) has public IP {inst.PublicIpAddress}");
-                    return inst.PublicIpAddress;
-                }
-            }
-            catch (AmazonEC2Exception ex)
-            {
-                _logger.LogDebug($"Failed to describe AWS instance {instanceId}: {ex.Message}");
-            }
-
-            await Task.Delay(TimeSpan.FromSeconds(pollSeconds));
-        }
-
-        _logger.LogWarning($"Timed out after {timeoutSeconds}s waiting for public IP of AWS instance {name} ({instanceId})");
-        return string.Empty;
     }
 
     private async Task<List<Instance>> DescribeRunnerInstances(params Filter[] extraFilters)

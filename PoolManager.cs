@@ -74,6 +74,8 @@ public class PoolManager : BackgroundService
         int cullMinutes = 1;
         int statsSeconds = 10;
         
+        var runningTasks = new List<Task>();
+
         while (!stoppingToken.IsCancellationRequested)
         {
             if (DateTime.UtcNow - crudeStatsTimer > TimeSpan.FromSeconds(statsSeconds))
@@ -172,12 +174,11 @@ public class PoolManager : BackgroundService
 
             Task.WaitAll(deletionTasks, stoppingToken);
             
-            // Process creation tasks in parallel with delay between starts
-            var runningTasks = new List<Task>();
+            // Rolling window: top up to ParallelOperations in-flight creates, never wait for a whole batch
+            runningTasks.RemoveAll(t => t.IsCompleted);
             var lastTaskStartTime = DateTime.UtcNow;
 
             while (runningTasks.Count < Program.Config.ParallelOperations && _queues.CreateTasks.TryDequeue(out CreateRunnerTask task))
-                
             {
                 if (task == null) continue;
 
@@ -188,33 +189,25 @@ public class PoolManager : BackgroundService
                     await Task.Delay(TimeSpan.FromMilliseconds(500) - timeSinceLastStart, stoppingToken);
                 }
 
-                // Start new task and add to running tasks
                 runningTasks.Add(Task.Run(async () =>
                 {
-                    bool success = await CreateRunner(task);
-                    if (!success)
+                    try
                     {
-                        _logger.LogWarning($"Encountered a problem creating runner for {task.RepoName}.");
+                        bool success = await CreateRunner(task);
+                        if (!success)
+                        {
+                            _logger.LogWarning($"Encountered a problem creating runner for {task.RepoName}.");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError($"Error while processing creation task: {ex.Message}");
                     }
                 }, stoppingToken));
 
                 lastTaskStartTime = DateTime.UtcNow;
             }
 
-            // Wait for all running tasks to complete
-            if (runningTasks.Any())
-            {
-                try
-                {
-                    await Task.WhenAll(runningTasks);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError($"Error while processing creation tasks: {ex.Message}");
-                }
-            }
-
-            
             /*if (_queues.CreateTasks.TryDequeue(out CreateRunnerTask task))
             {
                 if (task != null)

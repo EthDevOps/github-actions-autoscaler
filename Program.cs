@@ -514,6 +514,20 @@ public class Program
         return Results.StatusCode(201);
     }
 
+    // AWS/DO assign the public IP after the create call returns - poll the CSP until it shows up
+    private static async Task<string> WaitForPublicIp(ICloudController cloudController, long serverId, int timeoutSeconds = 60, int pollSeconds = 2)
+    {
+        var endTime = DateTime.UtcNow.AddSeconds(timeoutSeconds);
+        while (DateTime.UtcNow < endTime)
+        {
+            var ip = await cloudController.GetRunnerIpAddress(serverId);
+            if (!string.IsNullOrEmpty(ip) && ip != "0.0.0.0/0")
+                return ip;
+            await Task.Delay(TimeSpan.FromSeconds(pollSeconds));
+        }
+        return string.Empty;
+    }
+
     private static async Task<IResult> RunnerStateReportHandler(HttpRequest request, [FromServices] IServiceProvider serviceProvider , [FromServices] ILogger<Program> logger, [FromServices] RunnerQueue runnerQueue, [FromQuery] string hostname, [FromQuery] string state)
     {
         await using var db = new ActionsRunnerContext();
@@ -548,8 +562,8 @@ public class Program
                             .FirstOrDefault(x => x.CloudIdentifier == runner.Cloud);
                         if (cloudController != null)
                         {
-                            var actualIpAddress = await cloudController.GetRunnerIpAddress(runner.CloudServerId);
-                            if (!string.IsNullOrEmpty(actualIpAddress) && actualIpAddress != "0.0.0.0/0")
+                            var actualIpAddress = await WaitForPublicIp(cloudController, runner.CloudServerId);
+                            if (!string.IsNullOrEmpty(actualIpAddress))
                             {
                                 runner.IPv4 = actualIpAddress;
                                 logger.LogInformation($"Updated IP for runner {runner.Hostname} ({runner.Cloud}) to {actualIpAddress}");
