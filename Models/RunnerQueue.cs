@@ -79,10 +79,17 @@ public class DatabaseCreateTaskQueue
             .Count(r => r.Size == size && r.Owner == owner && r.Profile == profile);
     }
 
-    public bool TryDequeue(out CreateRunnerTask? task)
+    /// <param name="blockedSizeArch">"size|arch" keys to leave in the queue (e.g. every cloud for that size is paused)</param>
+    public bool TryDequeue(out CreateRunnerTask? task, List<string>? blockedSizeArch = null)
     {
         using var context = new ActionsRunnerContext();
-        var queueItem = context.CreateTaskQueues
+        IQueryable<CreateTaskQueue> query = context.CreateTaskQueues;
+        if (blockedSizeArch is { Count: > 0 })
+        {
+            query = query.Where(q => !context.Runners.Any(r =>
+                r.RunnerId == q.RunnerDbId && blockedSizeArch.Contains(r.Size + "|" + r.Arch)));
+        }
+        var queueItem = query
             .OrderBy(x => x.CreateTaskQueueId)
             .FirstOrDefault();
 

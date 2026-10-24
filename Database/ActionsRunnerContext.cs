@@ -15,6 +15,7 @@ public class ActionsRunnerContext()
     public DbSet<DeleteTaskQueue> DeleteTaskQueues { get; set; }
     public DbSet<CreatedRunnersTracking> CreatedRunnersTrackings { get; set; }
     public DbSet<CancelledRunnersCounter> CancelledRunnersCounters { get; set; }
+    public DbSet<PausedCloud> PausedClouds { get; set; }
 
     
     
@@ -43,6 +44,9 @@ public class ActionsRunnerContext()
         modelBuilder.Entity<CancelledRunnersCounter>()
             .HasIndex(c => new { c.Owner, c.Repository, c.Size, c.Profile, c.Arch })
             .IsUnique();
+
+        modelBuilder.Entity<PausedCloud>()
+            .HasKey(p => p.Cloud);
     }
 
     public async Task<Runner> LinkJobToRunner(long jobId, string runnerName)

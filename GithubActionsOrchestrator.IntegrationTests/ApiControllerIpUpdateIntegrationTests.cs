@@ -71,7 +71,7 @@ public class ApiControllerIpUpdateIntegrationTests : IClassFixture<ProxmoxTestFi
         var serviceProvider = services.BuildServiceProvider();
 
         var apiController = new ApiController(serviceProvider.GetRequiredService<RunnerQueue>(),
-            serviceProvider.GetRequiredService<Logger<ApiController>>(), serviceProvider.GetRequiredService<ILoggerFactory>());
+            serviceProvider.GetRequiredService<Logger<ApiController>>(), serviceProvider.GetRequiredService<ILoggerFactory>(), []);
 
         // Wait for VM to start and get network configuration
         await Task.Delay(30000); // 30 seconds
@@ -141,7 +141,7 @@ public class ApiControllerIpUpdateIntegrationTests : IClassFixture<ProxmoxTestFi
         var serviceProvider = services.BuildServiceProvider();
 
         var apiController = new ApiController(serviceProvider.GetRequiredService<RunnerQueue>(),
-            serviceProvider.GetRequiredService<Logger<ApiController>>(), serviceProvider.GetRequiredService<ILoggerFactory>());
+            serviceProvider.GetRequiredService<Logger<ApiController>>(), serviceProvider.GetRequiredService<ILoggerFactory>(), []);
 
         // Act - Call GetProvisionScript
         var result = await apiController.GetProvisionScript(machine.ProvisionId.ToLower(), null, serviceProvider);
@@ -189,7 +189,7 @@ public class ApiControllerIpUpdateIntegrationTests : IClassFixture<ProxmoxTestFi
         var serviceProvider = services.BuildServiceProvider();
 
         var apiController = new ApiController(serviceProvider.GetRequiredService<RunnerQueue>(),
-            serviceProvider.GetRequiredService<Logger<ApiController>>(), serviceProvider.GetRequiredService<ILoggerFactory>());
+            serviceProvider.GetRequiredService<Logger<ApiController>>(), serviceProvider.GetRequiredService<ILoggerFactory>(), []);
 
         // Act - Call GetProvisionScript
         var result = await apiController.GetProvisionScript(runner.ProvisionId.ToLower(), null, serviceProvider);

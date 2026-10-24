@@ -289,6 +289,22 @@ namespace GithubActionsOrchestrator.Migrations
                     b.ToTable("DeleteTaskQueues");
                 });
 
+            modelBuilder.Entity("GithubActionsOrchestrator.Models.PausedCloud", b =>
+                {
+                    b.Property<string>("Cloud")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("PausedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("PausedBy")
+                        .HasColumnType("text");
+
+                    b.HasKey("Cloud");
+
+                    b.ToTable("PausedClouds");
+                });
+
             modelBuilder.Entity("GithubActionsOrchestrator.Database.Job", b =>
                 {
                     b.HasOne("GithubActionsOrchestrator.Database.Runner", "Runner")

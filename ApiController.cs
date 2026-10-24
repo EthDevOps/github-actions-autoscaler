@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using GithubActionsOrchestrator.Auth;
+using GithubActionsOrchestrator.CloudControllers;
 using GithubActionsOrchestrator.Database;
 using GithubActionsOrchestrator.Models;
 using GithubActionsOrchestrator.Warpgate;
@@ -18,12 +19,14 @@ public class ApiController : Controller
     private readonly RunnerQueue _runnerQueue;
     private readonly ILogger<ApiController> _logger;
     private readonly ILoggerFactory _loggerFactory;
+    private readonly List<string> _clouds;
 
-    public ApiController(RunnerQueue runnerQueue, ILogger<ApiController> logger, ILoggerFactory loggerFactory)
+    public ApiController(RunnerQueue runnerQueue, ILogger<ApiController> logger, ILoggerFactory loggerFactory, IEnumerable<ICloudController> cloudControllers)
     {
         _runnerQueue = runnerQueue;
         _logger = logger;
         _loggerFactory = loggerFactory;
+        _clouds = cloudControllers.Select(x => x.CloudIdentifier).ToList();
     }
 
     /// <summary>
@@ -809,6 +812,73 @@ public class ApiController : Controller
 
         _logger.LogWarning($"Creation queue cleared: removed {count} tasks");
         return Results.Json(new { message = $"Cleared {count} tasks from creation queue" });
+    }
+
+    // ---------------------------------------------------------------------
+    // Cloud controllers (pause / resume scheduling)
+    // ---------------------------------------------------------------------
+
+    [Route("clouds")]
+    [HttpGet]
+    public async Task<IResult> GetClouds()
+    {
+        await using var db = new ActionsRunnerContext();
+        var paused = await db.PausedClouds.ToListAsync();
+
+        var items = _clouds.Select(cloud =>
+        {
+            var p = paused.FirstOrDefault(x => x.Cloud == cloud);
+            return new
+            {
+                cloud,
+                paused = p != null,
+                pausedAt = p?.PausedAt,
+                pausedBy = p?.PausedBy,
+                sizes = Program.Config.Sizes
+                    .Where(s => s.VmTypes.Any(v => v.Cloud == cloud))
+                    .Select(s => new
+                    {
+                        name = s.Name,
+                        arch = s.Arch,
+                        priority = s.VmTypes.Where(v => v.Cloud == cloud).Max(v => v.Priority),
+                        // Nowhere else to go: jobs for this size wait in the queue while paused
+                        onlyCloud = s.VmTypes.All(v => v.Cloud == cloud || paused.Any(x => x.Cloud == v.Cloud)),
+                    }),
+            };
+        });
+
+        return Results.Json(items);
+    }
+
+    [Route("clouds/{cloud}/pause")]
+    [HttpPost]
+    [Authorize(Policy = TeleportAuth.CanMutatePolicy)]
+    public async Task<IResult> PauseCloud(string cloud)
+    {
+        if (!_clouds.Contains(cloud))
+            return Results.NotFound(new { message = $"Cloud '{cloud}' is not registered" });
+
+        await using var db = new ActionsRunnerContext();
+        if (await db.PausedClouds.AnyAsync(x => x.Cloud == cloud))
+            return Results.Json(new { message = $"{cloud} is already paused" });
+
+        db.PausedClouds.Add(new PausedCloud { Cloud = cloud, PausedAt = DateTime.UtcNow, PausedBy = User?.Identity?.Name });
+        await db.SaveChangesAsync();
+
+        _logger.LogWarning($"Cloud {cloud} paused by {User?.Identity?.Name ?? "unknown"}");
+        return Results.Json(new { message = $"{cloud} paused. New runners go to the next cloud for their size, or wait in the queue." });
+    }
+
+    [Route("clouds/{cloud}/resume")]
+    [HttpPost]
+    [Authorize(Policy = TeleportAuth.CanMutatePolicy)]
+    public async Task<IResult> ResumeCloud(string cloud)
+    {
+        await using var db = new ActionsRunnerContext();
+        int removed = await db.PausedClouds.Where(x => x.Cloud == cloud).ExecuteDeleteAsync();
+
+        _logger.LogWarning($"Cloud {cloud} resumed by {User?.Identity?.Name ?? "unknown"}");
+        return Results.Json(new { message = removed > 0 ? $"{cloud} resumed" : $"{cloud} was not paused" });
     }
 
     [Route("health")]

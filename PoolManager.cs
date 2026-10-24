@@ -178,7 +178,10 @@ public class PoolManager : BackgroundService
             runningTasks.RemoveAll(t => t.IsCompleted);
             var lastTaskStartTime = DateTime.UtcNow;
 
-            while (runningTasks.Count < Program.Config.ParallelOperations && _queues.CreateTasks.TryDequeue(out CreateRunnerTask task))
+            // Sizes whose every cloud is paused stay queued until a cloud is resumed
+            List<string> blockedSizeArch = await GetFullyPausedSizes();
+
+            while (runningTasks.Count < Program.Config.ParallelOperations && _queues.CreateTasks.TryDequeue(out CreateRunnerTask task, blockedSizeArch))
             {
                 if (task == null) continue;
 
@@ -1500,6 +1503,24 @@ public class PoolManager : BackgroundService
         }
     }
 
+    /// <summary>
+    /// "size|arch" keys where every configured cloud is paused or banned, with at least one paused.
+    /// Same condition as the requeue in CreateRunner, so those tasks wait in the queue instead of cycling.
+    /// </summary>
+    private async Task<List<string>> GetFullyPausedSizes()
+    {
+        await using var db = new ActionsRunnerContext();
+        var paused = await db.PausedClouds.Select(x => x.Cloud).ToListAsync();
+        if (paused.Count == 0) return [];
+
+        var bans = _bannedClouds.ToList();
+        return Program.Config.Sizes
+            .Where(s => s.VmTypes.Any(v => paused.Contains(v.Cloud)) &&
+                        s.VmTypes.All(v => paused.Contains(v.Cloud) || bans.Any(b => b.Cloud == v.Cloud && b.Size == s.Name)))
+            .Select(s => $"{s.Name}|{s.Arch}")
+            .ToList();
+    }
+
     private async Task<bool> CreateRunner(CreateRunnerTask rt)
     {
         using var activity = Program.OrchestratorActivitySource.StartActivity("runner.create");
@@ -1552,10 +1573,21 @@ public class PoolManager : BackgroundService
             return false;
         }
 
+        var pausedClouds = await db.PausedClouds.Select(x => x.Cloud).ToListAsync();
+
         var selectedProvider = possibleProviders
             .Where(x => !_bannedClouds.Any(y => y.Cloud == x.Cloud && y.Size == runner.Size))
+            .Where(x => !pausedClouds.Contains(x.Cloud))
             .OrderByDescending(x => x.Priority)
             .FirstOrDefault();
+
+        if (selectedProvider == null && possibleProviders.Any(x => pausedClouds.Contains(x.Cloud)))
+        {
+            // Paused between dequeue and here (or remaining clouds are banned) - park it back in the queue
+            _logger.LogInformation($"All clouds for {runner.Size}/{runner.Arch} paused or banned, requeueing runner {runner.RunnerId}");
+            _queues.CreateTasks.Enqueue(rt);
+            return true;
+        }
 
         if (selectedProvider == null)
         {
