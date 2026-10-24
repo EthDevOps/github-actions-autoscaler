@@ -638,9 +638,10 @@ public class PoolManager : BackgroundService
         await using var db = new ActionsRunnerContext();
         var stuckTime = DateTime.UtcNow - TimeSpan.FromMinutes(10);
 
-        // Check both Queued and Throttled jobs that have been waiting >10min without a runner
+        // Check both Queued and Throttled jobs that have been waiting >10min - including ones with a runner
+        // linked, those are rows whose webhooks went to a duplicate and only GitHub knows the real state
         var stuckJobs = await db.Jobs
-            .Where(x => (x.State == JobState.Queued || x.State == JobState.Throttled) && x.RunnerId == null && x.QueueTime < stuckTime)
+            .Where(x => (x.State == JobState.Queued || x.State == JobState.Throttled) && x.QueueTime < stuckTime)
             .ToListAsync();
 
         activity?.SetTag("stuck_jobs.candidate_count", stuckJobs.Count);

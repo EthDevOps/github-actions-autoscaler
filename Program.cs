@@ -927,6 +927,15 @@ public class Program
         // Record runner to database
         await using var db = new ActionsRunnerContext();
 
+        // GitHub doesn't guarantee webhook order: in_progress/completed can arrive before queued.
+        // The job then already exists - a second row would sit in Queued forever and spawn a useless runner.
+        // ponytail: check-then-insert can still race with a concurrent in_progress; unique index on GithubJobId if it shows up again
+        if (jobId > 0 && await db.Jobs.AnyAsync(x => x.GithubJobId == jobId))
+        {
+            logger.LogWarning($"Queued webhook for job {jobId} in {repoName} arrived after the job was already recorded. Ignoring.");
+            return;
+        }
+
         // Check if quota is reached before creating runner
         if (targetConfig?.RunnerQuota.HasValue == true)
         {
