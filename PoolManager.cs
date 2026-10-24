@@ -656,32 +656,8 @@ public class PoolManager : BackgroundService
                 continue;
             }
 
-            // Check if quota is reached
-            bool quotaReached = await IsQuotaReached(owner, db);
-
-            if (quotaReached)
-            {
-                // Mark job as Throttled if it isn't already
-                if (stuckJob.State != JobState.Throttled)
-                {
-                    _logger.LogInformation($"Job {stuckJob.JobId} in {stuckJob.Repository} is throttled due to runner quota limit.");
-                    stuckJob.State = JobState.Throttled;
-                    await db.SaveChangesAsync();
-                }
-                continue;
-            }
-            else
-            {
-                // Quota is available - if job was throttled, move it back to queued
-                if (stuckJob.State == JobState.Throttled)
-                {
-                    _logger.LogInformation($"Quota now available for throttled job {stuckJob.JobId}. Moving to queued state.");
-                    stuckJob.State = JobState.Queued;
-                    await db.SaveChangesAsync();
-                }
-            }
-
-            // Verify job is still queued on GitHub before treating it as stuck
+            // Verify with GitHub first - throttled jobs too, they can get picked up or finish elsewhere
+            // ponytail: one GitHub call per stuck job per cycle; batch per repo if throttled backlogs hit rate limits
             var (ghJob, ghStatusCode) = await GitHubApi.GetJobInfoForRepo(stuckJob.GithubJobId, stuckJob.Repository , owner.GitHubToken);
             if (ghJob == null || ghJob.Status != "queued")
             {
@@ -698,9 +674,17 @@ public class PoolManager : BackgroundService
                 }
                 else if (ghJob.Status == "completed")
                 {
-                    _logger.LogInformation($"Job {stuckJob.JobId} already completed on GitHub - updating local state");
-                    stuckJob.State = JobState.Completed;
-                    stuckJob.CompleteTime = DateTime.UtcNow;
+                    _logger.LogInformation($"Job {stuckJob.JobId} already completed on GitHub ({ghJob.Conclusion}) - updating local state");
+                    stuckJob.State = ghJob.Conclusion == "cancelled" ? JobState.Cancelled : JobState.Completed;
+                    stuckJob.CompleteTime = ghJob.CompletedAt ?? DateTime.UtcNow;
+                    await db.SaveChangesAsync();
+                }
+                else if (ghJob.Status == "in_progress")
+                {
+                    // Picked up by a runner but we missed the in_progress webhook
+                    _logger.LogInformation($"Job {stuckJob.JobId} is in progress on GitHub (runner {ghJob.RunnerName}) - updating local state");
+                    stuckJob.State = JobState.InProgress;
+                    stuckJob.InProgressTime = ghJob.StartedAt ?? DateTime.UtcNow;
                     await db.SaveChangesAsync();
                 }
                 else
@@ -717,6 +701,29 @@ public class PoolManager : BackgroundService
                 }
 
                 continue;
+            }
+
+            // Still queued on GitHub - check if quota is reached
+            bool quotaReached = await IsQuotaReached(owner, db);
+
+            if (quotaReached)
+            {
+                // Mark job as Throttled if it isn't already
+                if (stuckJob.State != JobState.Throttled)
+                {
+                    _logger.LogInformation($"Job {stuckJob.JobId} in {stuckJob.Repository} is throttled due to runner quota limit.");
+                    stuckJob.State = JobState.Throttled;
+                    await db.SaveChangesAsync();
+                }
+                continue;
+            }
+
+            // Quota is available - if job was throttled, move it back to queued
+            if (stuckJob.State == JobState.Throttled)
+            {
+                _logger.LogInformation($"Quota now available for throttled job {stuckJob.JobId}. Moving to queued state.");
+                stuckJob.State = JobState.Queued;
+                await db.SaveChangesAsync();
             }
 
             // Job is confirmed stuck on GitHub
